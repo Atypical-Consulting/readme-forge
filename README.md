@@ -143,6 +143,14 @@ PROMPT-content.md    reusable prompt for the AI content pass
 
 <!-- portfolio-techstack:end -->
 
+<!-- portfolio-roadmap:start -->
+
+## Roadmap
+
+Planned work and known limitations are tracked in the [open issues](https://github.com/Atypical-Consulting/readme-forge/issues). Contributions toward them are welcome.
+
+<!-- portfolio-roadmap:end -->
+
 <!-- portfolio-sections:start -->
 
 ## Contributing
