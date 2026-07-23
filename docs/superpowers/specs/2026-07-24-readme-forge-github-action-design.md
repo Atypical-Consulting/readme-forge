@@ -179,7 +179,9 @@ A repo is harmonization-eligible when **all** hold:
 - has a README (repos with none are reported, not PR'd — a README from nothing is content work)
 - `created_at` older than `grace_days`
 - does not carry the `ignore_topic` topic
-- at least one essential is missing
+- **at least one deterministic sweep applies** — not merely "an essential is missing". A repo lacking
+  only `banner_logo`, `features_sec` or `usage` cannot be fixed by any sweep; opening a PR for it
+  would produce an empty diff. Those gaps are reported in the roll-up issue instead.
 
 ## Setup Required From the Maintainer
 
