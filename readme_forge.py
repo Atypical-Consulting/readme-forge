@@ -106,14 +106,18 @@ def detect(md):
     first = next((ln.strip() for ln in md.splitlines() if ln.strip()), "")
     lead_img = first.startswith("![") or first.lower().startswith("<img") or bool(
         re.match(r"<p[^>]*>\s*<(img|picture|a)", first, re.I))
-    f["banner_logo"] = bool(lead_img or any(re.search(r"banner|logo|hero|header", u, re.I) for u in images))
+    # Only NON-badge images count — a shields URL with `?logo=github` is a badge, not a banner.
+    f["banner_logo"] = bool(lead_img or any(re.search(r"banner|logo|hero|header", u, re.I) for u in non_badge))
     f["screenshot_gif"] = bool(any(re.search(r"\.gif|screenshot|demo|preview", u, re.I) for u in non_badge) or len(non_badge) >= 2)
     f["live_demo"] = bool(_hh(headings, "live demo", "demo", "try it") or any(h in low for h in demo_hosts))
     f["badges"] = len(badges)
     f["md_table"] = bool(re.search(r"^\s*\|.*\|\s*$", md, re.M) and re.search(r"^\s*\|?[\s:-]*-{3,}[\s:|-]*\|", md, re.M))
     f["toc"] = bool(_hh(headings, "table of contents", "contents", "sommaire", "toc")
                     or re.search(r"\[[^\]]+\]\(#[^)]+\)[\s\S]{0,80}\[[^\]]+\]\(#", md))
-    f["features_sec"] = _hh(headings, "feature")
+    # A real Features section, not any heading that merely mentions the word
+    # (e.g. "AI content pass (Features / Usage)" must not count).
+    f["features_sec"] = any(re.match(r"(?:[\d.\)\s]*)?(?:[^\w\s]\s*)?(?:key |core |main )?features?\b", h)
+                            for h in headings)
     f["tech_stack"] = _hh(headings, "tech stack", "built with", "stack", "technolog", "tech")
     f["install"] = bool(_hh(headings, "install", "getting started", "quick start", "quickstart", "setup")
                         or re.search(r"\b(npm i|npm install|dotnet add|pip install|yarn add|dotnet restore|git clone)\b", low))
