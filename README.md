@@ -14,6 +14,25 @@
 [![Last commit](https://img.shields.io/github/last-commit/Atypical-Consulting/readme-forge)](https://github.com/Atypical-Consulting/readme-forge/commits)
 <!-- portfolio-badges:end -->
 
+<!-- portfolio-toc:start -->
+
+## Table of Contents
+
+- [What "complete" means](#what-complete-means)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [The loop (live tracking)](#the-loop-live-tracking)
+- [Scope control (what counts)](#scope-control-what-counts)
+- [Gotchas learned the hard way](#gotchas-learned-the-hard-way)
+- [Files](#files)
+- [Tech Stack](#tech-stack)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+
+<!-- portfolio-toc:end -->
+
+
 
 Score and harmonize the READMEs of every repo in one or more GitHub orgs/users,
 and track progress toward **100% complete** on a live, theme-aware dashboard.
