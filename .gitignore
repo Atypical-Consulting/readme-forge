@@ -1,0 +1,10 @@
+# readme-forge generated data & artifacts
+.forge/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# local config overrides
+*.local.json

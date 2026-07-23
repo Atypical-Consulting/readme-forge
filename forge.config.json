@@ -1,0 +1,19 @@
+{
+  "orgs": ["your-org", "your-username"],
+
+  "essentials": [
+    "banner_logo", "badges", "toc", "features_sec", "tech_stack",
+    "install", "usage", "code_blocks", "roadmap", "contributing", "license_sec"
+  ],
+
+  "include_forks": false,
+  "include_archived": false,
+
+  "exclude_names": [".github"],
+  "exclude_suffixes": ["-backup"],
+  "exclude_regex": [],
+
+  "workdir": ".forge",
+  "commit_prefix": "docs:",
+  "max_workers": 10
+}
