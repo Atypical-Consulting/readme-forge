@@ -14,7 +14,8 @@
 - **No runtime dependencies.** `readme_forge.py` and `dashboard.py` stay stdlib-only. pytest is a dev-only dependency.
 - **Every write is idempotent.** Sweeps use HTML marker pairs; the PR flow reuses an existing branch and never opens a second PR for the same branch.
 - **The bot never commits to a target repo's default branch.** It only pushes to `pr_branch` and opens PRs.
-- **`forge.config.json` stays generic.** Accounts are never committed there; workflows pass `--org` from the `FORGE_ORGS` repository variable.
+- **`forge.config.json` stays generic.** It is the shipped example for any org. Neither accounts nor this portfolio's curated exclusions go in it: accounts arrive via `--org` from the `FORGE_ORGS` repository variable, and the curated exclusions live in a separate committed `portfolio.config.json` that the workflows select with the existing `--config` flag.
+- **Tests run in the repo's gitignored virtualenv.** Every `python` command in this plan is written as `.venv/bin/python` and must stay that way — the system interpreter has no pytest.
 - **Config defaults, exact values:** `grace_days` = `30`, `ignore_topic` = `"forge-ignore"`, `max_prs` = `10`, `pr_branch` = `"forge/harmonize"`, `report_label` = `"forge-report"`.
 - **`SWEEP_ORDER` is derived from `SWEEP_SPECS` order** and must remain: `header, sections, techstack, gettingstarted, roadmap, toc` (toc last).
 - **PR eligibility = at least one sweep applies**, never "an essential is missing".
@@ -27,7 +28,8 @@
 | File | Responsibility |
 |---|---|
 | `readme_forge.py` (modify) | Registry, pure build factories, chaining, eligibility, PR mechanics, CLI |
-| `forge.config.json` (modify) | New guardrail/PR keys; curated exclusions |
+| `forge.config.json` (modify) | New guardrail/PR keys (stays generic) |
+| `portfolio.config.json` (create) | Curated exclusions overlay for this portfolio |
 | `tests/conftest.py` (create) | Shared fixtures: config, repo records, README fixtures |
 | `tests/test_builds.py` (create) | Per-sweep content transforms + idempotency |
 | `tests/test_chain.py` (create) | `harmonize_content` ordering and completeness |
@@ -158,7 +160,7 @@ def test_toc_build_is_idempotent(cfg, rec):
 
 - [ ] **Step 4: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_builds.py -q`
+Run: `.venv/bin/python -m pytest tests/test_builds.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'make_roadmap_build'`
 
 - [ ] **Step 5: Extract the two pure builds into factories**
@@ -247,12 +249,12 @@ SWEEP_ORDER = [s["name"] for s in SWEEP_SPECS]
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_builds.py -q`
+Run: `.venv/bin/python -m pytest tests/test_builds.py -q`
 Expected: PASS (6 passed)
 
 - [ ] **Step 8: Verify the CLI still parses both sweeps**
 
-Run: `python readme_forge.py sweep --help`
+Run: `.venv/bin/python readme_forge.py sweep --help`
 Expected: help text listing `{roadmap,toc}` as choices for `which`
 
 - [ ] **Step 9: Commit**
@@ -363,7 +365,7 @@ def test_sweep_specs_order_is_canonical():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_builds.py -q`
+Run: `.venv/bin/python -m pytest tests/test_builds.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'make_header_build'`
 
 - [ ] **Step 3: Convert the four sweeps to factories**
@@ -412,12 +414,12 @@ Expected: only matches for `_sweep_targets(cfg, spec)`
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (15 passed)
 
 - [ ] **Step 7: Verify all six sweeps are still exposed on the CLI**
 
-Run: `python readme_forge.py sweep --help`
+Run: `.venv/bin/python readme_forge.py sweep --help`
 Expected: choices `{header,sections,techstack,gettingstarted,roadmap,toc}`
 
 - [ ] **Step 8: Commit**
@@ -528,7 +530,7 @@ def test_full_chain_is_idempotent(cfg, rec, bare_readme, monkeypatch):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_chain.py -q`
+Run: `.venv/bin/python -m pytest tests/test_chain.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'fixable'`
 
 - [ ] **Step 3: Implement the chaining helpers**
@@ -565,7 +567,7 @@ def harmonize_content(pairs, r, repo, content):
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (22 passed)
 
 - [ ] **Step 5: Commit**
@@ -662,7 +664,7 @@ def test_defaults_carry_the_agreed_guardrail_values():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_eligibility.py -q`
+Run: `.venv/bin/python -m pytest tests/test_eligibility.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'eligible'`
 
 - [ ] **Step 3: Add the new config defaults**
@@ -724,7 +726,7 @@ And add the two fields to the emitted record (after `"empty": x.get("isEmpty", F
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (32 passed)
 
 - [ ] **Step 8: Verify the new inventory fields against the live API**
@@ -748,7 +750,7 @@ Ensure the preceding line ends with a comma and the JSON stays valid.
 
 - [ ] **Step 10: Verify the config still parses**
 
-Run: `python -c "import json; print(sorted(json.load(open('forge.config.json'))))"`
+Run: `.venv/bin/python -c "import json; print(sorted(json.load(open('forge.config.json'))))"`
 Expected: a sorted key list including `grace_days`, `ignore_topic`, `max_prs`, `pr_branch`, `report_label`
 
 - [ ] **Step 11: Commit**
@@ -892,7 +894,7 @@ def test_put_readme_omits_branch_by_default(monkeypatch):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_pr.py -q`
+Run: `.venv/bin/python -m pytest tests/test_pr.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'ensure_branch'`
 
 - [ ] **Step 3: Extend `put_readme` with an optional branch**
@@ -983,7 +985,7 @@ def open_or_update_pr(repo, r, new_content, path, cfg):
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (39 passed)
 
 - [ ] **Step 6: Commit**
@@ -1052,7 +1054,7 @@ def test_cli_exposes_all_six_sweeps_and_the_pr_flag():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_backcompat.py -q`
+Run: `.venv/bin/python -m pytest tests/test_backcompat.py -q`
 Expected: FAIL on `test_cli_exposes_all_six_sweeps_and_the_pr_flag` — `--pr` not in help output
 
 - [ ] **Step 3: Implement the PR driver**
@@ -1132,12 +1134,12 @@ Replace the `harmonize` branch (lines 577-585) with:
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (43 passed)
 
 - [ ] **Step 6: Verify the legacy path is untouched**
 
-Run: `python readme_forge.py harmonize --help`
+Run: `.venv/bin/python readme_forge.py harmonize --help`
 Expected: help listing `--commit`, `--pr`, `--max-prs`, `--only`, `--org`
 
 - [ ] **Step 7: Commit**
@@ -1201,7 +1203,7 @@ def test_report_body_is_stable_for_identical_input(cfg, rec):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_report.py -q`
+Run: `.venv/bin/python -m pytest tests/test_report.py -q`
 Expected: FAIL with `AttributeError: module 'readme_forge' has no attribute 'report_body'`
 
 - [ ] **Step 3: Implement the report builder and issue upsert**
@@ -1280,7 +1282,7 @@ And add a dispatch branch after the `sweep` branch:
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (47 passed)
 
 - [ ] **Step 6: Commit**
@@ -1364,12 +1366,12 @@ jobs:
         run: |
           ORGS=""
           for o in $(echo "${{ vars.FORGE_ORGS }}" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
-          python readme_forge.py run $ORGS
+          python readme_forge.py --config portfolio.config.json run $ORGS
 
       - name: Upsert the roll-up issue
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python readme_forge.py report --repo ${{ github.repository }}
+        run: python readme_forge.py --config portfolio.config.json report --repo ${{ github.repository }}
 
       - name: Persist the snapshot
         run: |
@@ -1442,22 +1444,22 @@ jobs:
           ORGS=""
           for o in $(echo "${{ vars.FORGE_ORGS }}" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            python readme_forge.py run $ORGS
+            python readme_forge.py --config portfolio.config.json run $ORGS
           else
-            python readme_forge.py harmonize --pr --max-prs "${{ inputs.max_prs || 10 }}" $ORGS
+            python readme_forge.py --config portfolio.config.json harmonize --pr --max-prs "${{ inputs.max_prs || 10 }}" $ORGS
           fi
 ```
 
 - [ ] **Step 4: Validate both workflows parse as YAML**
 
-Run: `python -c "import yaml,sys; [yaml.safe_load(open(f)) for f in ['.github/workflows/forge-watch.yml','.github/workflows/forge-harmonize.yml']]; print('both parse')"`
+Run: `.venv/bin/python -c "import yaml,sys; [yaml.safe_load(open(f)) for f in ['.github/workflows/forge-watch.yml','.github/workflows/forge-harmonize.yml']]; print('both parse')"`
 Expected: `both parse`
 
 If PyYAML is unavailable, run `pip install pyyaml` first — it is a dev-only convenience, not a runtime dependency.
 
 - [ ] **Step 5: Run the full test suite**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (47 passed)
 
 - [ ] **Step 6: Commit**
@@ -1472,17 +1474,21 @@ git commit -m "feat: scheduled watch and harmonize workflows"
 ## Task 9: Port curated exclusions and document the watchdog
 
 **Files:**
-- Modify: `forge.config.json`
+- Create: `portfolio.config.json`
 - Modify: `README.md`
 
 **Interfaces:**
 - Consumes: everything above. No new code interfaces.
 
-- [ ] **Step 1: Port the curated non-software exclusions**
+- [ ] **Step 1: Create the portfolio overlay config**
 
-In `forge.config.json`, replace `"exclude_names": [".github"]` with the curated list carried over from `repo-audit/gen_dashboard.py`:
+`forge.config.json` stays the generic shipped example — do **not** put these names in it. Create a
+new committed file `portfolio.config.json` holding the curated non-software exclusions carried over
+from `repo-audit/gen_dashboard.py`. `load_config` merges this file over `DEFAULTS`, so only the keys
+that differ need to appear:
 
 ```json
+{
   "exclude_names": [
     ".github", "AAA",
     "LegacyModernization", "FormidableAnalyse", "fire-book", "master60",
@@ -1491,13 +1497,14 @@ In `forge.config.json`, replace `"exclude_names": [".github"]` with the curated 
     "phmatray", "Nexum", "EmptyRepo", "NetLibTemplate",
     "cap-support", "YendorSupport", "nugetkeep-releases", "ninjadog-product",
     "openjam-monorepo", "aspie-consult", "garry-brain"
-  ],
+  ]
+}
 ```
 
-- [ ] **Step 2: Verify the config still parses and the count is right**
+- [ ] **Step 2: Verify both configs parse and the exclusion count is right**
 
-Run: `python -c "import json; n=json.load(open('forge.config.json'))['exclude_names']; print(len(n), 'exclusions')"`
-Expected: `23 exclusions`
+Run: `.venv/bin/python -c "import json; n=json.load(open('portfolio.config.json'))['exclude_names']; g=json.load(open('forge.config.json'))['exclude_names']; print(len(n),'exclusions'); assert g==['.github'], 'forge.config.json must stay generic'"`
+Expected: `23 exclusions` and no assertion error
 
 - [ ] **Step 3: Document the watchdog in the README**
 
@@ -1536,19 +1543,19 @@ readme-forge ships two scheduled workflows so a portfolio stays at standard on i
 
 - [ ] **Step 4: Run the full suite one last time**
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: PASS (47 passed)
 
 - [ ] **Step 5: Dogfood the scan against the real portfolio**
 
-Run: `python readme_forge.py run --org phmatray --org Atypical-Consulting`
+Run: `.venv/bin/python readme_forge.py run --org phmatray --org Atypical-Consulting`
 Expected: a summary line reporting scored repos and completeness; `.forge/dashboard.html` written. This confirms the refactor did not change scoring behaviour.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add forge.config.json README.md
-git commit -m "docs: document the Action, port curated exclusions"
+git add portfolio.config.json README.md
+git commit -m "docs: document the Action, add portfolio exclusions overlay"
 ```
 
 ---
