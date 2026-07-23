@@ -1,5 +1,20 @@
 # README Forge
 
+<!-- portfolio-badges:start -->
+<!-- Identity -->
+[![Atypical-Consulting - readme-forge](https://img.shields.io/static/v1?label=Atypical-Consulting&message=readme-forge&color=blue&logo=github)](https://github.com/Atypical-Consulting/readme-forge)
+![Top language](https://img.shields.io/github/languages/top/Atypical-Consulting/readme-forge)
+[![Stars](https://img.shields.io/github/stars/Atypical-Consulting/readme-forge?style=social)](https://github.com/Atypical-Consulting/readme-forge/stargazers)
+[![Forks](https://img.shields.io/github/forks/Atypical-Consulting/readme-forge?style=social)](https://github.com/Atypical-Consulting/readme-forge/network/members)
+[![License](https://img.shields.io/github/license/Atypical-Consulting/readme-forge)](https://github.com/Atypical-Consulting/readme-forge/blob/HEAD/LICENSE)
+
+<!-- Activity -->
+[![Issues](https://img.shields.io/github/issues/Atypical-Consulting/readme-forge)](https://github.com/Atypical-Consulting/readme-forge/issues)
+[![Pull requests](https://img.shields.io/github/issues-pr/Atypical-Consulting/readme-forge)](https://github.com/Atypical-Consulting/readme-forge/pulls)
+[![Last commit](https://img.shields.io/github/last-commit/Atypical-Consulting/readme-forge)](https://github.com/Atypical-Consulting/readme-forge/commits)
+<!-- portfolio-badges:end -->
+
+
 Score and harmonize the READMEs of every repo in one or more GitHub orgs/users,
 and track progress toward **100% complete** on a live, theme-aware dashboard.
 
