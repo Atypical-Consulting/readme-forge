@@ -542,6 +542,33 @@ SWEEP_SPECS = [
 ]
 
 
+def fixable(r):
+    """True when at least one deterministic sweep can improve this repo."""
+    return any(s["applies"](r) for s in SWEEP_SPECS)
+
+
+def build_all(cfg):
+    """Instantiate every sweep's build once (they read shared state at construction)."""
+    return [(s, s["make_build"](cfg)) for s in SWEEP_SPECS]
+
+
+def harmonize_content(pairs, r, repo, content):
+    """Apply every applicable build in registry order, chaining in memory.
+
+    Returns the transformed content (possibly identical to the input). Each build
+    sees the previous build's output, which is why `toc` — running last — picks up
+    the sections the earlier builds just inserted.
+    """
+    out = content
+    for spec, build in pairs:
+        if not spec["applies"](r):
+            continue
+        new = build(r, repo, out)
+        if new:
+            out = new
+    return out
+
+
 def _spec(name):
     return next(s for s in SWEEP_SPECS if s["name"] == name)
 
