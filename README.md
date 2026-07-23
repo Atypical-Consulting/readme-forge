@@ -41,6 +41,15 @@ Extracted from a run that took a 2‑account, 300‑repo portfolio from **6% →
 of active software repos "complete" (all 11 essentials), median README richness
 5 → 12 / 21. It is **portable**: point it at any org you have `gh` access to.
 
+## Features
+
+- **21-feature README scoring** — score any repo's README against 21 best practices; a repo is "complete" when it has the 11 essentials
+- **One-command harmonization** — six idempotent sweeps add badges, Contributing/License, Tech Stack, Getting Started, a Roadmap pointer, and a table of contents
+- **Deterministic and safe** — edits go through the GitHub contents API (no clone), are dry-run by default, and wrap output in HTML markers so re-runs replace instead of duplicating
+- **Live progress dashboard** — a theme-aware board tracks completion against a saved baseline, with per-essential adoption and a per-repo to-do list
+- **Org-agnostic** — point it at any GitHub org or user; essentials and exclusions are config-driven
+- **AI content pass** — a reusable prompt (`PROMPT-content.md`) for the Features/Usage sections that need reading the code
+
 ## What "complete" means
 
 Each README is scored on **21 best practices**; "richness" is how many are present.
