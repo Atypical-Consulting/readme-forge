@@ -135,6 +135,14 @@ PROMPT-content.md    reusable prompt for the AI content pass
 
 ---
 
+<!-- portfolio-techstack:start -->
+
+## Tech Stack
+
+- **Python**
+
+<!-- portfolio-techstack:end -->
+
 <!-- portfolio-sections:start -->
 
 ## Contributing
