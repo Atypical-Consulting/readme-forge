@@ -552,6 +552,19 @@ def build_all(cfg):
     return [(s, s["make_build"](cfg)) for s in SWEEP_SPECS]
 
 
+# Builds insert content via two code paths that don't always agree on blank-line
+# count: `insert_after`'s raw newline splice (first insertion) vs
+# `marker_replace`'s rstrip-based join (every insertion after that). Chaining
+# several builds back to back can leave runs of 3+ blank lines butted up against
+# a portfolio marker. We normalize ONLY those marker-adjacent runs — never a
+# blanket `\n{3,}` -> `\n\n` over the whole document, which would also flatten
+# blank lines a fenced code block may legitimately contain. Anchoring on the
+# marker text (rather than position/line-scanning) keeps code fences untouched
+# without needing to track fence state here.
+_BLANKS_BEFORE_MARKER = re.compile(r"\n{3,}(?=<!-- portfolio-[\w-]+:start -->)")
+_BLANKS_AFTER_MARKER = re.compile(r"(<!-- portfolio-[\w-]+:end -->)\n{3,}")
+
+
 def harmonize_content(pairs, r, repo, content):
     """Apply every applicable build in registry order, chaining in memory.
 
@@ -566,6 +579,8 @@ def harmonize_content(pairs, r, repo, content):
         new = build(r, repo, out)
         if new:
             out = new
+    out = _BLANKS_BEFORE_MARKER.sub("\n\n", out)
+    out = _BLANKS_AFTER_MARKER.sub(r"\1\n\n", out)
     return out
 
 

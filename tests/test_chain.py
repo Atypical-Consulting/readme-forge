@@ -65,6 +65,22 @@ def test_full_chain_makes_a_bare_readme_score_the_sweepable_essentials(
         assert rf.essential_ok(feat, key), f"{key} not satisfied by the chain"
 
 
+def test_harmonize_content_normalizes_only_marker_adjacent_blank_runs(cfg, rec, bare_readme):
+    """3+ blank lines are collapsed only where they touch a portfolio marker; a
+    fenced code block's own blank lines, elsewhere in the document, must survive."""
+    spec = {"name": "s", "applies": lambda r: True}
+
+    def build(r, repo, content):
+        return (content
+                 + "\n\n\n<!-- portfolio-x:start -->\nblock\n<!-- portfolio-x:end -->\n\n\n"
+                 + "```\ncode\n\n\nmore code\n```\n")
+
+    out = rf.harmonize_content([(spec, build)], rec, "acme/widget", bare_readme)
+    assert "\n\n\n<!-- portfolio-x:start -->" not in out
+    assert "<!-- portfolio-x:end -->\n\n\n" not in out
+    assert "code\n\n\nmore code" in out
+
+
 def test_full_chain_is_idempotent(cfg, rec, bare_readme, monkeypatch):
     with open(f"{cfg['workdir']}/repos.json", "w") as fh:
         json.dump([{"owner": "acme", "name": "widget", "license_key": "mit"}], fh)
