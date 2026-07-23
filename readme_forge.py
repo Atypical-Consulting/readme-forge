@@ -36,6 +36,7 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------- config -----
 
@@ -54,6 +55,12 @@ DEFAULTS = {
     "workdir": ".forge",
     "commit_prefix": "docs:",       # commit message prefix for sweeps
     "max_workers": 10,
+    # --- watchdog / PR mode ---
+    "grace_days": 30,               # skip repos younger than this
+    "ignore_topic": "forge-ignore",  # topic that opts a repo out entirely
+    "max_prs": 10,                  # cap PRs opened per run
+    "pr_branch": "forge/harmonize",
+    "report_label": "forge-report",
 }
 
 
@@ -214,7 +221,8 @@ def cmd_inventory(cfg, orgs, only=None):
     repos = []
     for owner in orgs:
         r = sh(["gh", "repo", "list", owner, "--limit", "1000", "--json",
-                "name,isFork,isArchived,stargazerCount,primaryLanguage,defaultBranchRef,licenseInfo,description,pushedAt,isEmpty"])
+                "name,isFork,isArchived,stargazerCount,primaryLanguage,defaultBranchRef,"
+                "licenseInfo,description,pushedAt,isEmpty,createdAt,repositoryTopics"])
         if r.returncode != 0:
             sys.exit(f"gh repo list {owner} failed: {r.stderr.strip()}")
         for x in json.loads(r.stdout):
@@ -225,6 +233,8 @@ def cmd_inventory(cfg, orgs, only=None):
                 "default_branch": (x.get("defaultBranchRef") or {}).get("name"),
                 "license_key": (x.get("licenseInfo") or {}).get("key"),
                 "empty": x.get("isEmpty", False),
+                "created_at": x.get("createdAt"),
+                "topics": [t["name"] for t in (x.get("repositoryTopics") or [])],
             })
     if only:
         want = set(only.split(","))
@@ -545,6 +555,20 @@ SWEEP_SPECS = [
 def fixable(r):
     """True when at least one deterministic sweep can improve this repo."""
     return any(s["applies"](r) for s in SWEEP_SPECS)
+
+
+def eligible(r, cfg, now=None):
+    """Harmonization-eligible? Adds README/grace/topic checks on top of `_scored`."""
+    if not _scored(r, cfg) or r.get("no_readme") or r.get("empty"):
+        return False
+    if cfg.get("ignore_topic") and cfg["ignore_topic"] in (r.get("topics") or []):
+        return False
+    created, days = r.get("created_at"), cfg.get("grace_days") or 0
+    if created and days:
+        born = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if (now or datetime.now(timezone.utc)) - born < timedelta(days=days):
+            return False
+    return fixable(r)
 
 
 def build_all(cfg):

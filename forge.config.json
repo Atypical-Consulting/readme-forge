@@ -15,5 +15,11 @@
 
   "workdir": ".forge",
   "commit_prefix": "docs:",
-  "max_workers": 10
+  "max_workers": 10,
+
+  "grace_days": 30,
+  "ignore_topic": "forge-ignore",
+  "max_prs": 10,
+  "pr_branch": "forge/harmonize",
+  "report_label": "forge-report"
 }
