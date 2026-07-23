@@ -318,12 +318,6 @@ def insert_before_community(content, block):
 
 # ------------------------------------------------------------- sweeps --------
 
-def _targets(cfg, need):
-    """Active, non-excluded repos with a README that fail essential `need`."""
-    data = json.load(open(f"{cfg['workdir']}/data.json"))
-    return [r for r in data if _scored(r, cfg) and not r.get("no_readme") and not essential_ok(r, need)]
-
-
 def _run_sweep(cfg, targets, build_and_inject, msg, commit):
     print(f"{'COMMIT' if commit else 'DRY-RUN'} · {len(targets)} target(s)")
     counts = {"done": 0, "skip": 0, "fail": 0}
@@ -349,7 +343,7 @@ def _run_sweep(cfg, targets, build_and_inject, msg, commit):
     print("Summary:", json.dumps(counts))
 
 
-def sweep_header(cfg, commit):
+def make_header_build(cfg):
     S, E = "<!-- portfolio-badges:start -->", "<!-- portfolio-badges:end -->"
     licensed = {r["name"] for r in json.load(open(f"{cfg['workdir']}/repos.json")) if r.get("license_key") and r["license_key"] != "other"}
 
@@ -371,7 +365,7 @@ def sweep_header(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "badges"), build, f"{cfg['commit_prefix']} add standardized badge header", commit)
+    return build
 
 
 CONTRIB = ("## Contributing\n\nContributions are welcome. Open an issue first to discuss any significant change.\n\n"
@@ -382,12 +376,9 @@ LIC_NAMES = {"mit": "MIT", "apache-2.0": "Apache-2.0", "gpl-3.0": "GPL-3.0", "gp
              "agpl-3.0": "AGPL-3.0", "unlicense": "The Unlicense", "isc": "ISC"}
 
 
-def sweep_sections(cfg, commit):
+def make_sections_build(cfg):
     S, E = "<!-- portfolio-sections:start -->", "<!-- portfolio-sections:end -->"
     lic = {r["name"]: r["license_key"] for r in json.load(open(f"{cfg['workdir']}/repos.json")) if r.get("license_key") and r["license_key"] != "other"}
-    data = json.load(open(f"{cfg['workdir']}/data.json"))
-    targets = [r for r in data if _scored(r, cfg) and not r.get("no_readme")
-               and (not has(r, "contributing") or not has(r, "license_sec"))]
 
     def build(r, repo, content):
         parts = []
@@ -405,7 +396,7 @@ def sweep_sections(cfg, commit):
             return marker_replace(content, S, E, block)
         return content.rstrip() + "\n\n---\n\n" + block + "\n"
 
-    _run_sweep(cfg, targets, build, f"{cfg['commit_prefix']} add contributing and license sections", commit)
+    return build
 
 
 PKG_NOISE = re.compile(r"^(StyleCop|Roslynator|SonarAnalyzer|Meziantou|coverlet|Microsoft\.NET\.Test\.Sdk|"
@@ -415,7 +406,7 @@ TFM = {"net10.0": ".NET 10", "net9.0": ".NET 9", "net8.0": ".NET 8", "net7.0": "
        "net48": ".NET Framework 4.8", "net472": ".NET Framework 4.7.2"}
 
 
-def sweep_techstack(cfg, commit):
+def make_techstack_build(cfg):
     S, E = "<!-- portfolio-techstack:start -->", "<!-- portfolio-techstack:end -->"
 
     def build(r, repo, content):
@@ -452,7 +443,7 @@ def sweep_techstack(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_before_community(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "tech_stack"), build, f"{cfg['commit_prefix']} add Tech Stack section derived from manifests", commit)
+    return build
 
 
 def make_roadmap_build(cfg):
@@ -468,7 +459,7 @@ def make_roadmap_build(cfg):
     return build
 
 
-def sweep_gettingstarted(cfg, commit):
+def make_gettingstarted_build(cfg):
     S, E = "<!-- portfolio-getstarted:start -->", "<!-- portfolio-getstarted:end -->"
 
     def build(r, repo, content):
@@ -499,7 +490,7 @@ def sweep_gettingstarted(cfg, commit):
         r2 = insert_after(content, ["<!-- portfolio-toc:end -->", "<!-- portfolio-badges:end -->"], block)
         return r2 if r2 is not None else insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "install"), build, f"{cfg['commit_prefix']} add Getting Started section", commit)
+    return build
 
 
 def _slug(h):
@@ -535,6 +526,15 @@ def make_toc_build(cfg):
 
 
 SWEEP_SPECS = [
+    {"name": "header", "applies": lambda r: not essential_ok(r, "badges"),
+     "make_build": make_header_build, "msg": "add standardized badge header"},
+    {"name": "sections",
+     "applies": lambda r: not essential_ok(r, "contributing") or not essential_ok(r, "license_sec"),
+     "make_build": make_sections_build, "msg": "add contributing and license sections"},
+    {"name": "techstack", "applies": lambda r: not essential_ok(r, "tech_stack"),
+     "make_build": make_techstack_build, "msg": "add Tech Stack section derived from manifests"},
+    {"name": "gettingstarted", "applies": lambda r: not essential_ok(r, "install"),
+     "make_build": make_gettingstarted_build, "msg": "add Getting Started section"},
     {"name": "roadmap", "applies": lambda r: not essential_ok(r, "roadmap"),
      "make_build": make_roadmap_build, "msg": "add Roadmap section"},
     {"name": "toc", "applies": lambda r: not essential_ok(r, "toc"),
