@@ -455,7 +455,7 @@ def sweep_techstack(cfg, commit):
     _run_sweep(cfg, _targets(cfg, "tech_stack"), build, f"{cfg['commit_prefix']} add Tech Stack section derived from manifests", commit)
 
 
-def sweep_roadmap(cfg, commit):
+def make_roadmap_build(cfg):
     S, E = "<!-- portfolio-roadmap:start -->", "<!-- portfolio-roadmap:end -->"
 
     def build(r, repo, content):
@@ -465,7 +465,7 @@ def sweep_roadmap(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_before_community(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "roadmap"), build, f"{cfg['commit_prefix']} add Roadmap section", commit)
+    return build
 
 
 def sweep_gettingstarted(cfg, commit):
@@ -508,7 +508,7 @@ def _slug(h):
     return s.replace(" ", "-")
 
 
-def sweep_toc(cfg, commit):
+def make_toc_build(cfg):
     S, E = "<!-- portfolio-toc:start -->", "<!-- portfolio-toc:end -->"
     SKIP = ("table of contents", "contents", "sommaire", "toc")
 
@@ -531,13 +531,37 @@ def sweep_toc(cfg, commit):
         r2 = insert_after(content, ["<!-- portfolio-badges:end -->"], block)
         return r2 if r2 is not None else insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "toc"), build, f"{cfg['commit_prefix']} add table of contents", commit)
+    return build
 
 
-SWEEPS = {"header": sweep_header, "sections": sweep_sections, "techstack": sweep_techstack,
-          "roadmap": sweep_roadmap, "gettingstarted": sweep_gettingstarted, "toc": sweep_toc}
+SWEEP_SPECS = [
+    {"name": "roadmap", "applies": lambda r: not essential_ok(r, "roadmap"),
+     "make_build": make_roadmap_build, "msg": "add Roadmap section"},
+    {"name": "toc", "applies": lambda r: not essential_ok(r, "toc"),
+     "make_build": make_toc_build, "msg": "add table of contents"},
+]
+
+
+def _spec(name):
+    return next(s for s in SWEEP_SPECS if s["name"] == name)
+
+
+def _sweep_targets(cfg, spec):
+    """Active, non-excluded repos with a README that the given sweep applies to."""
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    return [r for r in data if _scored(r, cfg) and not r.get("no_readme") and spec["applies"](r)]
+
+
+def run_sweep_by_name(cfg, commit, name):
+    spec = _spec(name)
+    _run_sweep(cfg, _sweep_targets(cfg, spec), spec["make_build"](cfg),
+               f"{cfg['commit_prefix']} {spec['msg']}", commit)
+
+
+SWEEPS = {s["name"]: (lambda cfg, commit, _n=s["name"]: run_sweep_by_name(cfg, commit, _n))
+          for s in SWEEP_SPECS}
 # order in which harmonize runs them (toc last, once other sections exist)
-SWEEP_ORDER = ["header", "sections", "techstack", "gettingstarted", "roadmap", "toc"]
+SWEEP_ORDER = [s["name"] for s in SWEEP_SPECS]
 
 
 # --------------------------------------------------------------- main --------
