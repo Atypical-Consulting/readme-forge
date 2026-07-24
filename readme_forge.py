@@ -238,8 +238,14 @@ def ensure_branch(repo, branch, base_sha):
 
 
 def find_open_pr(repo, owner, branch):
-    j, _ = api(f"repos/{repo}/pulls?head={owner}:{branch}&state=open")
-    return j[0] if isinstance(j, list) and j else None
+    """Return (pr, err): the branch's open PR (or None if there isn't one),
+    and the api() error (or None on success). A failed search must NOT be
+    conflated with "no PR is open" — the caller has to be able to tell the
+    two apart to avoid opening a duplicate PR."""
+    j, err = api(f"repos/{repo}/pulls?head={owner}:{branch}&state=open")
+    if err:
+        return None, err
+    return (j[0] if isinstance(j, list) and j else None), None
 
 
 def open_or_update_pr(repo, r, new_content, path, cfg):
@@ -256,7 +262,12 @@ def open_or_update_pr(repo, r, new_content, path, cfg):
         return "failed", f"branch: {err}"
 
     current, sha = get_content_meta(repo, path, branch)
-    existing = find_open_pr(repo, r["owner"], branch)
+    existing, err = find_open_pr(repo, r["owner"], branch)
+    if err:
+        # Fail closed: we cannot tell "no PR is open" from "the search
+        # failed", and guessing wrong risks a duplicate PR — a worse outcome
+        # than skipping this repo for one (self-correcting) cycle.
+        return "failed", f"pr search: {err}"
     if current == new_content:
         return "unchanged", (existing or {}).get("html_url", "")
 

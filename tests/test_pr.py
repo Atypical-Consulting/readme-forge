@@ -106,3 +106,47 @@ def test_put_readme_omits_branch_by_default(monkeypatch):
     rf.put_readme("acme/widget", "README.md", "x", "sha1", "msg")
     _, _, fields = fake.calls[0]
     assert "branch" not in fields
+
+
+def test_open_or_update_pr_fails_closed_when_pr_search_errors(monkeypatch, cfg, rec_pr):
+    """A failed PR search must never be treated as "no PR is open" — that
+    would let a re-run commit and then POST a second, duplicate PR."""
+    fake = FakeApi({
+        ("GET", "repos/acme/widget/git/ref/heads/main"): ({"object": {"sha": "base1"}}, None),
+        ("POST", "repos/acme/widget/git/refs"): (None, "Reference already exists"),
+        ("GET", "repos/acme/widget/contents/README.md"): (
+            {"content": _b64("old"), "sha": "sha1"}, None),
+        ("GET", "repos/acme/widget/pulls"): (None, "API rate limit exceeded"),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+    action, detail = rf.open_or_update_pr("acme/widget", rec_pr, "new content", "README.md", cfg)
+    assert action == "failed"
+    assert "API rate limit exceeded" in detail
+    assert not any(p.startswith("repos/acme/widget/pulls") for p in fake.paths("POST"))
+    assert fake.paths("PUT") == []
+
+
+def test_open_or_update_pr_fails_when_base_ref_lookup_fails(monkeypatch, cfg, rec_pr):
+    fake = FakeApi({
+        ("GET", "repos/acme/widget/git/ref/heads/main"): (None, "Not Found"),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+    action, detail = rf.open_or_update_pr("acme/widget", rec_pr, "new content", "README.md", cfg)
+    assert action == "failed"
+    assert "Not Found" in detail
+
+
+def test_open_or_update_pr_fails_when_pr_creation_fails(monkeypatch, cfg, rec_pr):
+    fake = FakeApi({
+        ("GET", "repos/acme/widget/git/ref/heads/main"): ({"object": {"sha": "base1"}}, None),
+        ("POST", "repos/acme/widget/git/refs"): ({"ref": "ok"}, None),
+        ("GET", "repos/acme/widget/contents/README.md"): (
+            {"content": _b64("old"), "sha": "sha1"}, None),
+        ("PUT", "repos/acme/widget/contents/README.md"): ({"commit": {}}, None),
+        ("GET", "repos/acme/widget/pulls"): ([], None),
+        ("POST", "repos/acme/widget/pulls"): (None, "Validation Failed"),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+    action, detail = rf.open_or_update_pr("acme/widget", rec_pr, "new content", "README.md", cfg)
+    assert action == "failed"
+    assert "Validation Failed" in detail
