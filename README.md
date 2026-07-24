@@ -165,6 +165,35 @@ PROMPT-content.md    reusable prompt for the AI content pass
 
 ---
 
+## Running as a GitHub Action
+
+readme-forge ships two scheduled workflows so a portfolio stays at standard on its own.
+
+| Workflow | Schedule | What it does |
+|---|---|---|
+| `forge-watch` | Mondays 06:00 UTC | Inventory, scan, publish the dashboard to Pages, upsert one roll-up issue |
+| `forge-harmonize` | Mondays 07:00 UTC | Open one harmonization PR per eligible repository |
+
+### Setup
+
+1. Create a fine-grained PAT with `contents:write`, `pull_requests:write` and
+   `metadata:read` on the accounts you want watched, and store it as the
+   `FORGE_TOKEN` repository secret. The built-in `GITHUB_TOKEN` cannot reach
+   repositories outside this one.
+2. Enable **Settings → Pages → Source: GitHub Actions**.
+3. Set the repository variable `FORGE_ORGS` to a comma-separated list of the
+   accounts to scan, e.g. `my-org,my-username`.
+
+### Guardrails
+
+- **Grace period** — repositories younger than `grace_days` (default 30) are left alone.
+- **Opt out** — add the `forge-ignore` topic to any repository and the forge skips it entirely.
+- **PR cap** — at most `max_prs` (default 10) pull requests per run; the rest are listed in the
+  roll-up issue instead of flooding your inbox.
+- **Never the default branch** — the bot only pushes to `forge/harmonize` and opens a PR.
+- Repositories whose only gaps need real writing (Features, a Usage narrative) are reported
+  under "Needs a human", never PR'd.
+
 <!-- portfolio-techstack:start -->
 
 ## Tech Stack
