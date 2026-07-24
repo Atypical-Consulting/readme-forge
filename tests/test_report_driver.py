@@ -50,8 +50,8 @@ def test_cmd_report_creates_a_new_labeled_issue_when_none_is_open(monkeypatch, c
     # labels must be a list, not the bare string -- api() renders a list as
     # repeated `-f labels[]=item` fields; a plain string renders as
     # `-f labels=item`, which GitHub's issue-creation endpoint rejects
-    # outright (HTTP 422: "... is not an array" -- confirmed empirically,
-    # see task-7-report.md).
+    # outright (HTTP 422: "... is not an array" -- confirmed empirically
+    # against a real repository).
     assert post_fields["labels"] == [cfg["report_label"]]
     assert post_fields["title"] == rf.REPORT_TITLE
     assert "widget" in post_fields["body"]

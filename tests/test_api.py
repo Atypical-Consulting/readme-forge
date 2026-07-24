@@ -1,9 +1,9 @@
 """Coverage for api()'s `-f` field encoding, in particular the list -> array
-field fix from task 7: `gh api -f key=value` always sends a plain string, and
-GitHub's REST API rejects that for array-typed properties (e.g. `labels` on
-issue creation returns HTTP 422 "... is not an array" -- confirmed
-empirically against a real repository, see task-7-report.md). `gh api --help`
-documents the fix: repeat `-f key[]=item` once per array element.
+field fix: `gh api -f key=value` always sends a plain string, and GitHub's REST
+API rejects that for array-typed properties (e.g. `labels` on issue creation
+returns HTTP 422 "... is not an array" -- confirmed empirically against a real
+repository). `gh api --help` documents the fix: repeat `-f key[]=item` once per
+array element.
 """
 import readme_forge as rf
 

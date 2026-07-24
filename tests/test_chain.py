@@ -81,6 +81,39 @@ def test_harmonize_content_normalizes_only_marker_adjacent_blank_runs(cfg, rec, 
     assert "code\n\n\nmore code" in out
 
 
+def test_harmonize_content_returns_the_input_when_no_build_changes_anything(
+        cfg, rec, monkeypatch):
+    """`applies` means "a spec is relevant", NOT "its build writes something".
+
+    This repo's only gap is tech_stack, and with an empty tree and no primary
+    language the techstack build returns None. Nothing changed — so nothing may
+    be rewritten, marker normalization included. Otherwise a pre-existing blank
+    run after a marker (this very repo's README has `portfolio-toc:end` followed
+    by four newlines) becomes a whitespace-only diff, and the PR body claims to
+    add "the deterministic sections this repository was missing (techstack)".
+    """
+    with open(f"{cfg['workdir']}/repos.json", "w") as fh:
+        json.dump([{"owner": "acme", "name": "widget", "license_key": "mit"}], fh)
+    rec.update(badges=3, toc=True, install=True, roadmap=True, contributing=True,
+               license_sec=True, tech_stack=False, lang=None)
+    monkeypatch.setattr(rf, "tree", lambda repo: [])
+    monkeypatch.setattr(rf, "get_file", lambda repo, path: None)
+
+    content = "# Widget\n\n<!-- portfolio-toc:end -->\n\n\n\nSome prose.\n"
+    out = rf.harmonize_content(rf.build_all(cfg), rec, "acme/widget", content)
+
+    assert out == content
+
+
+def test_harmonize_content_still_normalizes_when_a_build_did_change_something(
+        cfg, rec, bare_readme):
+    """The no-op guard must not disable normalization for real edits."""
+    spec = {"name": "s", "applies": lambda r: True}
+    pairs = [(spec, lambda r, repo, c: c + "\n\n\n<!-- portfolio-x:start -->\nb\n")]
+    out = rf.harmonize_content(pairs, rec, "acme/widget", bare_readme)
+    assert "\n\n\n<!-- portfolio-x:start -->" not in out
+
+
 def test_full_chain_is_idempotent(cfg, rec, bare_readme, monkeypatch):
     with open(f"{cfg['workdir']}/repos.json", "w") as fh:
         json.dump([{"owner": "acme", "name": "widget", "license_key": "mit"}], fh)

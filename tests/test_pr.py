@@ -136,6 +136,29 @@ def test_open_or_update_pr_fails_when_base_ref_lookup_fails(monkeypatch, cfg, re
     assert "Not Found" in detail
 
 
+def test_open_or_update_pr_refuses_when_pr_branch_is_the_default_branch(monkeypatch, cfg, rec_pr):
+    """"Never the default branch" is the hardest constraint here, and a single
+    mistyped `pr_branch` defeats it silently: ensure_branch reports an existing
+    branch as success, so `"pr_branch": "main"` would sail through and the
+    contents PUT would commit straight to main on a foreign repository."""
+    cfg["pr_branch"] = "main"  # == rec_pr["default_branch"]
+    fake = FakeApi({
+        ("GET", "repos/acme/widget/git/ref/heads/main"): ({"object": {"sha": "base1"}}, None),
+        ("POST", "repos/acme/widget/git/refs"): (None, "Reference already exists"),
+        ("GET", "repos/acme/widget/contents/README.md"): (
+            {"content": _b64("old"), "sha": "sha1"}, None),
+        ("PUT", "repos/acme/widget/contents/README.md"): ({"commit": {}}, None),
+        ("GET", "repos/acme/widget/pulls"): ([], None),
+        ("POST", "repos/acme/widget/pulls"): ({"number": 7, "html_url": "u"}, None),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+    action, detail = rf.open_or_update_pr("acme/widget", rec_pr, "new content", "README.md", cfg)
+    assert action == "failed"
+    assert "default branch" in detail
+    assert fake.paths("PUT") == []   # nothing was committed
+    assert fake.calls == []          # and it never even reached the API
+
+
 def test_open_or_update_pr_fails_when_pr_creation_fails(monkeypatch, cfg, rec_pr):
     fake = FakeApi({
         ("GET", "repos/acme/widget/git/ref/heads/main"): ({"object": {"sha": "base1"}}, None),
