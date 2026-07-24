@@ -728,6 +728,44 @@ SWEEPS = {s["name"]: (lambda cfg, commit, _n=s["name"]: run_sweep_by_name(cfg, c
 SWEEP_ORDER = [s["name"] for s in SWEEP_SPECS]
 
 
+def cmd_harmonize_pr(cfg):
+    """Open one harmonization PR per eligible repo. Returns action counts."""
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    targets = [r for r in data if eligible(r, cfg)]
+    raw_cap = cfg.get("max_prs")
+    # An explicit cap of 0 must be honored as "open no PRs this run", not
+    # treated as "unset" -- `0 or len(targets)` would silently discard the
+    # cap since 0 is falsy, so check identity against None instead.
+    cap = raw_cap if raw_cap is not None else len(targets)
+    capped = targets[cap:]
+    targets = targets[:cap]
+    print(f"PR MODE · {len(targets)} eligible repo(s)"
+          + (f" · {len(capped)} deferred by max_prs" if capped else ""))
+
+    pairs = build_all(cfg)
+    counts = {"created": 0, "updated": 0, "unchanged": 0, "failed": 0,
+              "capped": len(capped)}
+
+    def work(r):
+        repo = f"{r['owner']}/{r['name']}"
+        content, _, path = get_readme(repo)
+        if not content or not content.strip():
+            return "unchanged", repo, ""
+        new = harmonize_content(pairs, r, repo, content)
+        if new == content:
+            return "unchanged", repo, ""
+        action, detail = open_or_update_pr(repo, r, new, path, cfg)
+        return action, repo, detail
+
+    with ThreadPoolExecutor(max_workers=cfg["max_workers"]) as ex:
+        for action, repo, detail in ex.map(work, targets):
+            counts[action] += 1
+            if action != "unchanged":
+                print(f"  {action}: {repo} {detail}")
+    print("Summary:", json.dumps(counts))
+    return counts
+
+
 # --------------------------------------------------------------- main --------
 
 def main():
@@ -741,6 +779,9 @@ def main():
             p.add_argument("--only", help="comma-separated repo names to limit to")
         if name in ("harmonize",):
             p.add_argument("--commit", action="store_true")
+            p.add_argument("--pr", action="store_true",
+                           help="open a PR per repo instead of committing to the default branch")
+            p.add_argument("--max-prs", type=int, help="override config max_prs")
     sp = sub.add_parser("sweep")
     sp.add_argument("which", choices=list(SWEEPS))
     sp.add_argument("--commit", action="store_true")
@@ -765,10 +806,15 @@ def main():
     elif args.cmd == "harmonize":
         cmd_inventory(cfg, args.org, args.only)
         cmd_scan(cfg)
-        for name in SWEEP_ORDER:
-            print(f"\n=== sweep: {name} ===")
-            SWEEPS[name](cfg, args.commit)
-            cmd_scan(cfg)  # refresh so the next sweep sees prior insertions
+        if args.pr:
+            if args.max_prs is not None:
+                cfg["max_prs"] = args.max_prs
+            cmd_harmonize_pr(cfg)
+        else:
+            for name in SWEEP_ORDER:
+                print(f"\n=== sweep: {name} ===")
+                SWEEPS[name](cfg, args.commit)
+                cmd_scan(cfg)  # refresh so the next sweep sees prior insertions
         import dashboard
         dashboard.generate(cfg)
 
