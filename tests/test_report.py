@@ -28,3 +28,14 @@ def test_report_body_marks_content_only_gaps_as_human_work(cfg, rec):
 def test_report_body_is_stable_for_identical_input(cfg, rec):
     data = [dict(rec, name="a"), dict(rec, name="b")]
     assert rf.report_body(data, cfg) == rf.report_body(data, cfg)
+
+
+def test_report_body_sentinels_when_every_scored_repo_is_complete(cfg, rec):
+    complete = dict(rec, name="polished", badges=3, toc=True, tech_stack=True,
+                    install=True, usage=True, roadmap=True, contributing=True,
+                    license_sec=True, banner_logo=True, features_sec=True, code_blocks=2)
+    body = rf.report_body([complete], cfg)
+    assert "1/1" in body
+    assert "Every scored repository meets the standard. Nothing to do." in body
+    assert "Fixable automatically" not in body
+    assert "Needs a human" not in body

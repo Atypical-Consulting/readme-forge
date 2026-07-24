@@ -47,7 +47,12 @@ def test_cmd_report_creates_a_new_labeled_issue_when_none_is_open(monkeypatch, c
     posts = [(p, f) for m, p, f in fake.calls if m == "POST"]
     assert len(posts) == 1
     _, post_fields = posts[0]
-    assert post_fields["labels"] == cfg["report_label"]
+    # labels must be a list, not the bare string -- api() renders a list as
+    # repeated `-f labels[]=item` fields; a plain string renders as
+    # `-f labels=item`, which GitHub's issue-creation endpoint rejects
+    # outright (HTTP 422: "... is not an array" -- confirmed empirically,
+    # see task-7-report.md).
+    assert post_fields["labels"] == [cfg["report_label"]]
     assert post_fields["title"] == rf.REPORT_TITLE
     assert "widget" in post_fields["body"]
 
@@ -87,3 +92,34 @@ def test_cmd_report_fails_closed_when_the_labeled_issue_search_errors(monkeypatc
     assert action == "failed"
     assert fake.paths("POST") == []
     assert fake.paths("PATCH") == []
+
+
+def test_cmd_report_returns_failed_when_the_patch_call_itself_errors(monkeypatch, cfg, rec):
+    """A write failure must surface as "failed", not the misleadingly upbeat
+    "updated" -- a caller trusting the return value needs to be able to tell
+    "the issue body was actually rewritten" from "gh rejected the PATCH"."""
+    _data(cfg, [dict(rec, name="widget")])
+    fake = FakeApi({
+        ("GET", "repos/acme/portfolio/issues"): ([{"number": 42}], None),
+        ("PATCH", "repos/acme/portfolio/issues/42"): (None, "Validation Failed"),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+
+    action = rf.cmd_report(cfg, "acme/portfolio")
+
+    assert action == "failed"
+
+
+def test_cmd_report_returns_failed_when_the_post_call_itself_errors(monkeypatch, cfg, rec):
+    """Same guard on the create path: a rejected POST (e.g. the labels-shape
+    422 this task fixed) must not be reported as "created"."""
+    _data(cfg, [dict(rec, name="widget")])
+    fake = FakeApi({
+        ("GET", "repos/acme/portfolio/issues"): ([], None),
+        ("POST", "repos/acme/portfolio/issues"): (None, "Validation Failed"),
+    })
+    monkeypatch.setattr(rf, "api", fake)
+
+    action = rf.cmd_report(cfg, "acme/portfolio")
+
+    assert action == "failed"

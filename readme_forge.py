@@ -176,7 +176,21 @@ def api(path, method=None, fields=None):
         cmd += ["--method", method]
     cmd.append(path)
     for k, v in (fields or {}).items():
-        cmd += ["-f", f"{k}={v}"]
+        # `gh api -f key=value` always sends a plain string. The GitHub REST
+        # API rejects that for array-typed properties (e.g. `labels` on issue
+        # creation: HTTP 422 "... is not an array" -- confirmed empirically,
+        # see task-7-report.md). `gh api --help` documents the fix: repeat
+        # `-f key[]=item` once per element (an empty list becomes a single
+        # `-f key[]` with no value, gh's syntax for an empty array). Every
+        # existing caller passes plain scalars, so this is purely additive.
+        if isinstance(v, (list, tuple)):
+            if not v:
+                cmd += ["-f", f"{k}[]"]
+            else:
+                for item in v:
+                    cmd += ["-f", f"{k}[]={item}"]
+        else:
+            cmd += ["-f", f"{k}={v}"]
     r = sh(cmd)
     if r.returncode != 0:
         return None, (r.stderr or r.stdout).strip()
@@ -832,7 +846,7 @@ def cmd_report(cfg, repo):
         print(f"updated issue #{num}")
         return "updated"
     _, err = api(f"repos/{repo}/issues", "POST",
-                 {"title": REPORT_TITLE, "body": body, "labels": label})
+                 {"title": REPORT_TITLE, "body": body, "labels": [label]})
     if err:
         print(f"failed: {err}")
         return "failed"
