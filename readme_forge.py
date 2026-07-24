@@ -200,11 +200,80 @@ def get_file(repo, path):
     return base64.b64decode(j["content"]).decode("utf-8", "replace")
 
 
-def put_readme(repo, path, new, sha, msg):
+def put_readme(repo, path, new, sha, msg, branch=None):
     b64 = base64.b64encode(new.encode("utf-8")).decode("ascii")
-    j, err = api(f"repos/{repo}/contents/{path}", "PUT",
-                 {"message": msg, "content": b64, "sha": sha})
+    fields = {"message": msg, "content": b64, "sha": sha}
+    if branch:
+        fields["branch"] = branch
+    j, err = api(f"repos/{repo}/contents/{path}", "PUT", fields)
     return err is None, err
+
+
+PR_BODY = (
+    "Automated README harmonization by [readme-forge]"
+    "(https://github.com/Atypical-Consulting/readme-forge).\n\n"
+    "This PR adds the deterministic sections this repository was missing "
+    "({missing}). Every insertion is delimited by HTML markers, so re-running "
+    "the forge updates this branch in place rather than duplicating content.\n\n"
+    "Content that needs real judgement (Features, a written Usage narrative) is "
+    "deliberately left to a human.\n"
+)
+
+
+def get_content_meta(repo, path, ref):
+    """Return (content, sha) for a file on a specific ref, or (None, None)."""
+    j, _ = api(f"repos/{repo}/contents/{path}?ref={ref}")
+    if not j or "content" not in j:
+        return None, None
+    return base64.b64decode(j["content"]).decode("utf-8", "replace"), j["sha"]
+
+
+def ensure_branch(repo, branch, base_sha):
+    """Create `branch` at `base_sha`; an already-existing branch is success."""
+    _, err = api(f"repos/{repo}/git/refs", "POST",
+                 {"ref": f"refs/heads/{branch}", "sha": base_sha})
+    if err and "already exists" in err.lower():
+        return True, None
+    return err is None, err
+
+
+def find_open_pr(repo, owner, branch):
+    j, _ = api(f"repos/{repo}/pulls?head={owner}:{branch}&state=open")
+    return j[0] if isinstance(j, list) and j else None
+
+
+def open_or_update_pr(repo, r, new_content, path, cfg):
+    """Push `new_content` to the forge branch and ensure exactly one open PR.
+
+    Returns (action, detail) with action in {created, updated, unchanged, failed}.
+    """
+    branch, base = cfg["pr_branch"], r.get("default_branch") or "main"
+    ref, err = api(f"repos/{repo}/git/ref/heads/{base}")
+    if not ref or "object" not in ref:
+        return "failed", f"base ref: {err or 'not found'}"
+    ok, err = ensure_branch(repo, branch, ref["object"]["sha"])
+    if not ok:
+        return "failed", f"branch: {err}"
+
+    current, sha = get_content_meta(repo, path, branch)
+    existing = find_open_pr(repo, r["owner"], branch)
+    if current == new_content:
+        return "unchanged", (existing or {}).get("html_url", "")
+
+    missing = ", ".join(s["name"] for s in SWEEP_SPECS if s["applies"](r)) or "sections"
+    ok, err = put_readme(repo, path, new_content, sha,
+                         f"{cfg['commit_prefix']} harmonize README", branch=branch)
+    if not ok:
+        return "failed", f"commit: {err}"
+    if existing:
+        return "updated", existing.get("html_url", "")
+
+    pr, err = api(f"repos/{repo}/pulls", "POST", {
+        "title": f"{cfg['commit_prefix']} harmonize README",
+        "head": branch, "base": base, "body": PR_BODY.format(missing=missing)})
+    if not pr:
+        return "failed", f"pr: {err}"
+    return "created", pr.get("html_url", "")
 
 
 def tree(repo):
