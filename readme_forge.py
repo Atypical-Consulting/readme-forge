@@ -770,6 +770,76 @@ def cmd_harmonize_pr(cfg):
     return counts
 
 
+REPORT_TITLE = "readme-forge: portfolio README drift"
+
+
+def report_body(data, cfg):
+    """Build the roll-up issue body. Pure — no network, stable for identical input."""
+    scored = [r for r in data if _scored(r, cfg) and not r.get("no_readme")]
+    incomplete = [r for r in scored
+                  if not all(essential_ok(r, k) for k in cfg["essentials"])]
+    lines = [f"**{len(scored) - len(incomplete)}/{len(scored)}** scored repositories are complete.",
+             ""]
+    if not incomplete:
+        lines.append("Every scored repository meets the standard. Nothing to do.")
+        return "\n".join(lines)
+
+    auto = [r for r in incomplete if fixable(r)]
+    human = [r for r in incomplete if not fixable(r)]
+    if auto:
+        lines += ["## Fixable automatically", "",
+                  "The forge opens PRs for these on its next harmonize run.", "",
+                  "| Repository | Missing |", "|---|---|"]
+        for r in sorted(auto, key=lambda x: (x["owner"], x["name"])):
+            miss = ", ".join(k for k in cfg["essentials"] if not essential_ok(r, k))
+            lines.append(f"| `{r['owner']}/{r['name']}` | {miss} |")
+        lines.append("")
+    if human:
+        lines += ["## Needs a human", "",
+                  "No deterministic sweep can write these — they need real judgement.", "",
+                  "| Repository | Missing |", "|---|---|"]
+        for r in sorted(human, key=lambda x: (x["owner"], x["name"])):
+            miss = ", ".join(k for k in cfg["essentials"] if not essential_ok(r, k))
+            lines.append(f"| `{r['owner']}/{r['name']}` | {miss} |")
+        lines.append("")
+    lines.append("<sub>Maintained by readme-forge — this issue is edited in place, never duplicated.</sub>")
+    return "\n".join(lines)
+
+
+def cmd_report(cfg, repo):
+    """Create or edit the single roll-up issue in `repo`.
+
+    Returns the action taken: "created", "updated", or "failed". The open-issue
+    search is fail-closed by design: a search *error* is not the same thing as
+    "no issue is open" (isinstance(found, list) and found is False either way),
+    and treating it as "none open" would POST a duplicate roll-up issue every
+    time the search merely flakes -- the same reasoning open_or_update_pr
+    already applies to its own PR search (see find_open_pr).
+    """
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    body = report_body(data, cfg)
+    label = cfg["report_label"]
+    found, err = api(f"repos/{repo}/issues?state=open&labels={label}")
+    if err:
+        print(f"failed: {err}")
+        return "failed"
+    if isinstance(found, list) and found:
+        num = found[0]["number"]
+        _, err = api(f"repos/{repo}/issues/{num}", "PATCH", {"body": body})
+        if err:
+            print(f"failed: {err}")
+            return "failed"
+        print(f"updated issue #{num}")
+        return "updated"
+    _, err = api(f"repos/{repo}/issues", "POST",
+                 {"title": REPORT_TITLE, "body": body, "labels": label})
+    if err:
+        print(f"failed: {err}")
+        return "failed"
+    print("created report issue")
+    return "created"
+
+
 # --------------------------------------------------------------- main --------
 
 def main():
@@ -790,6 +860,8 @@ def main():
     sp.add_argument("which", choices=list(SWEEPS))
     sp.add_argument("--commit", action="store_true")
     sp.add_argument("--org", action="append", default=[])
+    rp = sub.add_parser("report")
+    rp.add_argument("--repo", required=True, help="owner/name of the repo holding the roll-up issue")
     args = ap.parse_args()
     cfg = load_config(args.config)
 
@@ -802,6 +874,8 @@ def main():
         dashboard.generate(cfg)
     elif args.cmd == "sweep":
         SWEEPS[args.which](cfg, args.commit)
+    elif args.cmd == "report":
+        cmd_report(cfg, args.repo)
     elif args.cmd == "run":
         cmd_inventory(cfg, args.org, args.only)
         cmd_scan(cfg)
