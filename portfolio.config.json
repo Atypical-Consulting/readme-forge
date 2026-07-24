@@ -1,0 +1,11 @@
+{
+  "exclude_names": [
+    ".github", "AAA",
+    "LegacyModernization", "FormidableAnalyse", "fire-book", "master60",
+    "ids-microservices", "StateOfTheArtAI", "ids-llm",
+    "Platformer2D_Brackeys", "G3.TreasuresMonsters.Java", "gbstudio-solstice",
+    "phmatray", "Nexum", "EmptyRepo", "NetLibTemplate",
+    "cap-support", "YendorSupport", "nugetkeep-releases", "ninjadog-product",
+    "openjam-monorepo", "aspie-consult", "garry-brain"
+  ]
+}

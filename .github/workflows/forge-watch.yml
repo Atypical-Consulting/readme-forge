@@ -1,0 +1,96 @@
+name: forge-watch
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write     # commit the state snapshot
+  issues: write       # upsert the roll-up issue
+  pages: write        # deploy the dashboard
+  id-token: write     # required by deploy-pages
+
+concurrency:
+  group: forge-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # Full history so the rebase in "Persist the snapshot" has something to
+      # rebase onto.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only baseline.json matters here: progress is measured against it, and it
+      # is written once and never again. data.json is rewritten by every scan, so
+      # restoring it would be dead work.
+      - name: Restore the saved baseline
+        run: |
+          mkdir -p .forge
+          [ -f state/baseline.json ] && cp state/baseline.json .forge/baseline.json || true
+
+      # FORGE_ORGS goes through env rather than into the script text: FORGE_TOKEN
+      # is in scope here, so a value containing shell syntax must never be able to
+      # become shell syntax.
+      - name: Inventory, scan and build the dashboard
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORGS: ${{ vars.FORGE_ORGS }}
+        run: |
+          ORGS=""
+          for o in $(echo "$FORGE_ORGS" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
+          python readme_forge.py --config portfolio.config.json run $ORGS
+
+      - name: Upsert the roll-up issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_REPO: ${{ github.repository }}
+        run: python readme_forge.py --config portfolio.config.json report --repo "$REPORT_REPO"
+
+      - uses: actions/configure-pages@v5
+
+      - name: Stage the dashboard for Pages
+        run: |
+          mkdir -p _site
+          cp .forge/dashboard.html _site/index.html
+          cp .forge/data.json _site/data.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      # Last, deliberately: this is the one step that can fail for reasons
+      # outside the forge's control (a protected branch, a push race with an
+      # out-of-band commit). Running it after the deploy means such a failure
+      # costs the snapshot commit, still reported red -- not the week's
+      # dashboard refresh and roll-up issue, which have already landed.
+      - name: Persist the snapshot
+        run: |
+          cp .forge/data.json state/data.json
+          [ -f state/baseline.json ] || cp .forge/baseline.json state/baseline.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --staged --quiet; then
+            echo "Snapshot unchanged; nothing to commit."
+          else
+            git commit -m "chore: refresh portfolio drift snapshot"
+            # A commit landing on the branch between checkout and push would
+            # otherwise abort on a non-fast-forward.
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

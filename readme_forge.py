@@ -23,10 +23,17 @@ Or in one go (read-only vs write):
   python readme_forge.py run --org my-org                 # inventory + scan + dashboard
   python readme_forge.py harmonize --org my-org --commit  # all deterministic sweeps + refresh
 
-Every write is idempotent (HTML markers), edits via the GitHub contents API
-(GET README -> PUT, no clone), commits directly to the default branch, and is
-DRY-RUN unless you pass --commit. The content essentials that need real
-understanding (Features / Usage) are left to you or an AI agent — see README.md.
+Unattended mode (what the scheduled workflows run):
+  python readme_forge.py report --repo owner/name         # upsert the roll-up drift issue
+  python readme_forge.py harmonize --pr --org my-org      # preview one PR per eligible repo
+  python readme_forge.py harmonize --pr --commit --org my-org   # actually open them
+
+Every write is idempotent (HTML markers) and edits via the GitHub contents API
+(GET README -> PUT, no clone). Nothing is written without --commit. The legacy
+sweeps (`sweep`, `harmonize` without --pr) commit to the default branch; the
+`--pr` path never does — it pushes to `pr_branch` and opens a pull request. The
+content essentials that need real understanding (Features / Usage) are left to
+you or an AI agent — see README.md.
 """
 import argparse
 import base64
@@ -36,6 +43,7 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------- config -----
 
@@ -54,6 +62,16 @@ DEFAULTS = {
     "workdir": ".forge",
     "commit_prefix": "docs:",       # commit message prefix for sweeps
     "max_workers": 10,
+    # --- watchdog / PR mode ---
+    "grace_days": 30,               # skip repos younger than this
+    # Topic that opts a repo out of *writes*: it is never branched, committed to
+    # or PR'd. It is still inventoried, scored, shown on the dashboard and listed
+    # in the roll-up issue (under "held back by a guardrail"), because the point
+    # of the board is an honest picture of the portfolio.
+    "ignore_topic": "forge-ignore",
+    "max_prs": 10,                  # cap PRs opened per run
+    "pr_branch": "forge/harmonize",
+    "report_label": "forge-report",
 }
 
 
@@ -169,7 +187,21 @@ def api(path, method=None, fields=None):
         cmd += ["--method", method]
     cmd.append(path)
     for k, v in (fields or {}).items():
-        cmd += ["-f", f"{k}={v}"]
+        # `gh api -f key=value` always sends a plain string. The GitHub REST
+        # API rejects that for array-typed properties (e.g. `labels` on issue
+        # creation: HTTP 422 "... is not an array", confirmed empirically
+        # against a real repository). `gh api --help` documents the fix: repeat
+        # `-f key[]=item` once per element (an empty list becomes a single
+        # `-f key[]` with no value, gh's syntax for an empty array). Every
+        # existing caller passes plain scalars, so this is purely additive.
+        if isinstance(v, (list, tuple)):
+            if not v:
+                cmd += ["-f", f"{k}[]"]
+            else:
+                for item in v:
+                    cmd += ["-f", f"{k}[]={item}"]
+        else:
+            cmd += ["-f", f"{k}={v}"]
     r = sh(cmd)
     if r.returncode != 0:
         return None, (r.stderr or r.stdout).strip()
@@ -193,11 +225,102 @@ def get_file(repo, path):
     return base64.b64decode(j["content"]).decode("utf-8", "replace")
 
 
-def put_readme(repo, path, new, sha, msg):
+def put_readme(repo, path, new, sha, msg, branch=None):
     b64 = base64.b64encode(new.encode("utf-8")).decode("ascii")
-    j, err = api(f"repos/{repo}/contents/{path}", "PUT",
-                 {"message": msg, "content": b64, "sha": sha})
+    fields = {"message": msg, "content": b64, "sha": sha}
+    if branch:
+        fields["branch"] = branch
+    j, err = api(f"repos/{repo}/contents/{path}", "PUT", fields)
     return err is None, err
+
+
+PR_BODY = (
+    "Automated README harmonization by [readme-forge]"
+    "(https://github.com/Atypical-Consulting/readme-forge).\n\n"
+    "This PR adds the deterministic sections this repository was missing "
+    "({missing}). Every insertion is delimited by HTML markers, so re-running "
+    "the forge updates this branch in place rather than duplicating content.\n\n"
+    "Content that needs real judgement (Features, a written Usage narrative) is "
+    "deliberately left to a human.\n"
+)
+
+
+def get_content_meta(repo, path, ref):
+    """Return (content, sha) for a file on a specific ref, or (None, None)."""
+    j, _ = api(f"repos/{repo}/contents/{path}?ref={ref}")
+    if not j or "content" not in j:
+        return None, None
+    return base64.b64decode(j["content"]).decode("utf-8", "replace"), j["sha"]
+
+
+def ensure_branch(repo, branch, base_sha):
+    """Create `branch` at `base_sha`; an already-existing branch is success."""
+    _, err = api(f"repos/{repo}/git/refs", "POST",
+                 {"ref": f"refs/heads/{branch}", "sha": base_sha})
+    if err and "already exists" in err.lower():
+        return True, None
+    return err is None, err
+
+
+def find_open_pr(repo, owner, branch):
+    """Return (pr, err): the branch's open PR (or None if there isn't one),
+    and the api() error (or None on success). A failed search must NOT be
+    conflated with "no PR is open" — the caller has to be able to tell the
+    two apart to avoid opening a duplicate PR."""
+    j, err = api(f"repos/{repo}/pulls?head={owner}:{branch}&state=open")
+    if err:
+        return None, err
+    return (j[0] if isinstance(j, list) and j else None), None
+
+
+def open_or_update_pr(repo, r, new_content, path, cfg):
+    """Push `new_content` to the forge branch and ensure exactly one open PR.
+
+    Returns (action, detail) with action in {created, updated, unchanged, failed}.
+    """
+    branch, base = cfg["pr_branch"], r.get("default_branch") or "main"
+    # "Never the default branch" is this tool's hardest safety constraint, and a
+    # single mistyped `pr_branch` would defeat it silently: ensure_branch()
+    # reports an existing branch as success, so a pr_branch of "main" sails
+    # through and the contents PUT below commits straight to the default branch
+    # -- no PR, no review, on someone else's repository. Refuse up front.
+    if branch == base:
+        return "failed", f"pr_branch {branch!r} is the default branch — refusing to write"
+    ref, err = api(f"repos/{repo}/git/ref/heads/{base}")
+    if not ref or "object" not in ref:
+        return "failed", f"base ref: {err or 'not found'}"
+    # ensure_branch runs before the fail-closed PR search below. That ordering is
+    # deliberate and safe: creating (or re-finding) the forge branch is not a
+    # write to any repository content -- nothing is committed until the PUT, which
+    # is gated on the search having succeeded.
+    ok, err = ensure_branch(repo, branch, ref["object"]["sha"])
+    if not ok:
+        return "failed", f"branch: {err}"
+
+    current, sha = get_content_meta(repo, path, branch)
+    existing, err = find_open_pr(repo, r["owner"], branch)
+    if err:
+        # Fail closed: we cannot tell "no PR is open" from "the search
+        # failed", and guessing wrong risks a duplicate PR — a worse outcome
+        # than skipping this repo for one (self-correcting) cycle.
+        return "failed", f"pr search: {err}"
+    if current == new_content:
+        return "unchanged", (existing or {}).get("html_url", "")
+
+    missing = ", ".join(s["name"] for s in SWEEP_SPECS if s["applies"](r)) or "sections"
+    ok, err = put_readme(repo, path, new_content, sha,
+                         f"{cfg['commit_prefix']} harmonize README", branch=branch)
+    if not ok:
+        return "failed", f"commit: {err}"
+    if existing:
+        return "updated", existing.get("html_url", "")
+
+    pr, err = api(f"repos/{repo}/pulls", "POST", {
+        "title": f"{cfg['commit_prefix']} harmonize README",
+        "head": branch, "base": base, "body": PR_BODY.format(missing=missing)})
+    if not pr:
+        return "failed", f"pr: {err}"
+    return "created", pr.get("html_url", "")
 
 
 def tree(repo):
@@ -214,7 +337,8 @@ def cmd_inventory(cfg, orgs, only=None):
     repos = []
     for owner in orgs:
         r = sh(["gh", "repo", "list", owner, "--limit", "1000", "--json",
-                "name,isFork,isArchived,stargazerCount,primaryLanguage,defaultBranchRef,licenseInfo,description,pushedAt,isEmpty"])
+                "name,isFork,isArchived,stargazerCount,primaryLanguage,defaultBranchRef,"
+                "licenseInfo,description,pushedAt,isEmpty,createdAt,repositoryTopics"])
         if r.returncode != 0:
             sys.exit(f"gh repo list {owner} failed: {r.stderr.strip()}")
         for x in json.loads(r.stdout):
@@ -225,10 +349,24 @@ def cmd_inventory(cfg, orgs, only=None):
                 "default_branch": (x.get("defaultBranchRef") or {}).get("name"),
                 "license_key": (x.get("licenseInfo") or {}).get("key"),
                 "empty": x.get("isEmpty", False),
+                "created_at": x.get("createdAt"),
+                "topics": [t["name"] for t in (x.get("repositoryTopics") or [])],
             })
+    # An *empty but successful* `gh repo list` is the dangerous case: a PAT whose
+    # repository selection drifted, or an org the token lost access to, exits 0
+    # with `[]`. Carried through, that overwrites data.json with an empty scan,
+    # renders an empty dashboard and reports "every scored repository meets the
+    # standard" -- a green run that watched nothing. Stop here instead.
+    if not repos:
+        sys.exit(f"No repositories returned for {', '.join(orgs)}. Refusing to continue: "
+                 "an empty inventory would overwrite the snapshot and report success. "
+                 "Check the org name(s) (--org / FORGE_ORGS) and that the token still "
+                 "has access to them (`gh repo list OWNER`).")
     if only:
         want = set(only.split(","))
         repos = [r for r in repos if r["name"] in want]
+        if not repos:
+            sys.exit(f"--only {only} matched none of the {len(orgs)} owner(s)' repositories.")
     os.makedirs(cfg["workdir"], exist_ok=True)
     json.dump(repos, open(f"{cfg['workdir']}/repos.json", "w"))
     print(f"{len(repos)} repos across {len(orgs)} owner(s) -> {cfg['workdir']}/repos.json")
@@ -318,12 +456,6 @@ def insert_before_community(content, block):
 
 # ------------------------------------------------------------- sweeps --------
 
-def _targets(cfg, need):
-    """Active, non-excluded repos with a README that fail essential `need`."""
-    data = json.load(open(f"{cfg['workdir']}/data.json"))
-    return [r for r in data if _scored(r, cfg) and not r.get("no_readme") and not essential_ok(r, need)]
-
-
 def _run_sweep(cfg, targets, build_and_inject, msg, commit):
     print(f"{'COMMIT' if commit else 'DRY-RUN'} · {len(targets)} target(s)")
     counts = {"done": 0, "skip": 0, "fail": 0}
@@ -349,7 +481,7 @@ def _run_sweep(cfg, targets, build_and_inject, msg, commit):
     print("Summary:", json.dumps(counts))
 
 
-def sweep_header(cfg, commit):
+def make_header_build(cfg):
     S, E = "<!-- portfolio-badges:start -->", "<!-- portfolio-badges:end -->"
     licensed = {r["name"] for r in json.load(open(f"{cfg['workdir']}/repos.json")) if r.get("license_key") and r["license_key"] != "other"}
 
@@ -371,7 +503,7 @@ def sweep_header(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "badges"), build, f"{cfg['commit_prefix']} add standardized badge header", commit)
+    return build
 
 
 CONTRIB = ("## Contributing\n\nContributions are welcome. Open an issue first to discuss any significant change.\n\n"
@@ -382,12 +514,9 @@ LIC_NAMES = {"mit": "MIT", "apache-2.0": "Apache-2.0", "gpl-3.0": "GPL-3.0", "gp
              "agpl-3.0": "AGPL-3.0", "unlicense": "The Unlicense", "isc": "ISC"}
 
 
-def sweep_sections(cfg, commit):
+def make_sections_build(cfg):
     S, E = "<!-- portfolio-sections:start -->", "<!-- portfolio-sections:end -->"
     lic = {r["name"]: r["license_key"] for r in json.load(open(f"{cfg['workdir']}/repos.json")) if r.get("license_key") and r["license_key"] != "other"}
-    data = json.load(open(f"{cfg['workdir']}/data.json"))
-    targets = [r for r in data if _scored(r, cfg) and not r.get("no_readme")
-               and (not has(r, "contributing") or not has(r, "license_sec"))]
 
     def build(r, repo, content):
         parts = []
@@ -405,7 +534,7 @@ def sweep_sections(cfg, commit):
             return marker_replace(content, S, E, block)
         return content.rstrip() + "\n\n---\n\n" + block + "\n"
 
-    _run_sweep(cfg, targets, build, f"{cfg['commit_prefix']} add contributing and license sections", commit)
+    return build
 
 
 PKG_NOISE = re.compile(r"^(StyleCop|Roslynator|SonarAnalyzer|Meziantou|coverlet|Microsoft\.NET\.Test\.Sdk|"
@@ -415,7 +544,7 @@ TFM = {"net10.0": ".NET 10", "net9.0": ".NET 9", "net8.0": ".NET 8", "net7.0": "
        "net48": ".NET Framework 4.8", "net472": ".NET Framework 4.7.2"}
 
 
-def sweep_techstack(cfg, commit):
+def make_techstack_build(cfg):
     S, E = "<!-- portfolio-techstack:start -->", "<!-- portfolio-techstack:end -->"
 
     def build(r, repo, content):
@@ -452,10 +581,10 @@ def sweep_techstack(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_before_community(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "tech_stack"), build, f"{cfg['commit_prefix']} add Tech Stack section derived from manifests", commit)
+    return build
 
 
-def sweep_roadmap(cfg, commit):
+def make_roadmap_build(cfg):
     S, E = "<!-- portfolio-roadmap:start -->", "<!-- portfolio-roadmap:end -->"
 
     def build(r, repo, content):
@@ -465,10 +594,10 @@ def sweep_roadmap(cfg, commit):
             return marker_replace(content, S, E, block)
         return insert_before_community(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "roadmap"), build, f"{cfg['commit_prefix']} add Roadmap section", commit)
+    return build
 
 
-def sweep_gettingstarted(cfg, commit):
+def make_gettingstarted_build(cfg):
     S, E = "<!-- portfolio-getstarted:start -->", "<!-- portfolio-getstarted:end -->"
 
     def build(r, repo, content):
@@ -499,7 +628,7 @@ def sweep_gettingstarted(cfg, commit):
         r2 = insert_after(content, ["<!-- portfolio-toc:end -->", "<!-- portfolio-badges:end -->"], block)
         return r2 if r2 is not None else insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "install"), build, f"{cfg['commit_prefix']} add Getting Started section", commit)
+    return build
 
 
 def _slug(h):
@@ -508,7 +637,7 @@ def _slug(h):
     return s.replace(" ", "-")
 
 
-def sweep_toc(cfg, commit):
+def make_toc_build(cfg):
     S, E = "<!-- portfolio-toc:start -->", "<!-- portfolio-toc:end -->"
     SKIP = ("table of contents", "contents", "sommaire", "toc")
 
@@ -531,13 +660,341 @@ def sweep_toc(cfg, commit):
         r2 = insert_after(content, ["<!-- portfolio-badges:end -->"], block)
         return r2 if r2 is not None else insert_after_h1(content, block)
 
-    _run_sweep(cfg, _targets(cfg, "toc"), build, f"{cfg['commit_prefix']} add table of contents", commit)
+    return build
 
 
-SWEEPS = {"header": sweep_header, "sections": sweep_sections, "techstack": sweep_techstack,
-          "roadmap": sweep_roadmap, "gettingstarted": sweep_gettingstarted, "toc": sweep_toc}
+SWEEP_SPECS = [
+    {"name": "header", "applies": lambda r: not essential_ok(r, "badges"),
+     "make_build": make_header_build, "msg": "add standardized badge header"},
+    {"name": "sections",
+     "applies": lambda r: not essential_ok(r, "contributing") or not essential_ok(r, "license_sec"),
+     "make_build": make_sections_build, "msg": "add contributing and license sections"},
+    {"name": "techstack", "applies": lambda r: not essential_ok(r, "tech_stack"),
+     "make_build": make_techstack_build, "msg": "add Tech Stack section derived from manifests"},
+    {"name": "gettingstarted", "applies": lambda r: not essential_ok(r, "install"),
+     "make_build": make_gettingstarted_build, "msg": "add Getting Started section"},
+    {"name": "roadmap", "applies": lambda r: not essential_ok(r, "roadmap"),
+     "make_build": make_roadmap_build, "msg": "add Roadmap section"},
+    {"name": "toc", "applies": lambda r: not essential_ok(r, "toc"),
+     "make_build": make_toc_build, "msg": "add table of contents"},
+]
+
+
+def fixable(r):
+    """True when at least one deterministic sweep can improve this repo."""
+    return any(s["applies"](r) for s in SWEEP_SPECS)
+
+
+def _born(created):
+    """Parse an inventory `created_at` into a datetime, or None if unusable.
+
+    None covers two distinct kinds of bad input, and callers treat both the same
+    (fail closed): a non-string shape (int, list, ... — a hand-edited or truncated
+    .forge/data.json), rejected *before* `.replace()`/`fromisoformat()` can raise
+    on it; and a string that simply is not a timestamp.
+    """
+    if not isinstance(created, str):
+        return None
+    try:
+        return datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def eligible(r, cfg, now=None):
+    """Harmonization-eligible? Adds README/grace/topic checks on top of `_scored`."""
+    if not _scored(r, cfg) or r.get("no_readme") or r.get("empty"):
+        return False
+    if cfg.get("ignore_topic") and cfg["ignore_topic"] in (r.get("topics") or []):
+        return False
+    created, days = r.get("created_at"), cfg.get("grace_days") or 0
+    if created and days:
+        born = _born(created)
+        if born is None:
+            # We cannot confirm this repo is past its grace period, so skip it
+            # this run rather than risk an unattended PR against a repo we
+            # can't age-check. (A *missing* created_at is a different, expected
+            # case — legacy inventory data — handled above by `created and
+            # days` being falsy; that path deliberately does not block.)
+            return False
+        if (now or datetime.now(timezone.utc)) - born < timedelta(days=days):
+            return False
+    return fixable(r)
+
+
+def hold_reason(r, cfg, now=None):
+    """Why a fixable repo is not harmonization-eligible, in one short phrase.
+
+    Returns None when the repo *is* eligible. Mirrors `eligible()`'s checks in the
+    same order so the roll-up issue can name the guardrail that held a repo back
+    instead of advertising it as a pending PR target the forge will never open.
+    """
+    if eligible(r, cfg, now=now):
+        return None
+    if cfg.get("ignore_topic") and cfg["ignore_topic"] in (r.get("topics") or []):
+        return f"opted out via the `{cfg['ignore_topic']}` topic"
+    if r.get("empty"):
+        return "repository is empty"
+    created, days = r.get("created_at"), cfg.get("grace_days") or 0
+    if created and days:
+        if _born(created) is None:
+            return "unreadable `created_at`"
+        return f"inside the {days}-day grace period"
+    return "not eligible for harmonization"
+
+
+def build_all(cfg):
+    """Instantiate every sweep's build once (they read shared state at construction)."""
+    return [(s, s["make_build"](cfg)) for s in SWEEP_SPECS]
+
+
+# Builds insert content via two code paths that don't always agree on blank-line
+# count: `insert_after`'s raw newline splice (first insertion) vs
+# `marker_replace`'s rstrip-based join (every insertion after that). Chaining
+# several builds back to back can leave runs of 3+ blank lines butted up against
+# a portfolio marker. We normalize ONLY those marker-adjacent runs — never a
+# blanket `\n{3,}` -> `\n\n` over the whole document, which would also flatten
+# blank lines a fenced code block may legitimately contain. Anchoring on the
+# marker text (rather than position/line-scanning) keeps code fences untouched
+# without needing to track fence state here.
+_BLANKS_BEFORE_MARKER = re.compile(r"\n{3,}(?=<!-- portfolio-[\w-]+:start -->)")
+_BLANKS_AFTER_MARKER = re.compile(r"(<!-- portfolio-[\w-]+:end -->)\n{3,}")
+
+
+def harmonize_content(pairs, r, repo, content):
+    """Apply every applicable build in registry order, chaining in memory.
+
+    Returns the transformed content (possibly identical to the input). Each build
+    sees the previous build's output, which is why `toc` — running last — picks up
+    the sections the earlier builds just inserted. Once at least one build has
+    written something, the marker-adjacent blank runs left behind by chaining are
+    normalized (see `_BLANKS_BEFORE_MARKER`) — so the returned content can differ
+    from the input by more than the sum of the builds' own insertions.
+
+    When no build changes anything the input is returned *verbatim*, normalization
+    included. `spec["applies"](r)` only means a sweep is relevant to this repo, not
+    that its build can write: `gettingstarted` returns None for an unrecognized
+    stack, `techstack` with no manifest and no primary language, `toc` under four
+    H2s. Normalizing regardless would turn a pre-existing blank run next to a
+    marker into a whitespace-only diff — enough to open a PR whose body claims to
+    add sections that were never added.
+    """
+    out = content
+    changed = False
+    for spec, build in pairs:
+        if not spec["applies"](r):
+            continue
+        new = build(r, repo, out)
+        if new and new != out:
+            out = new
+            changed = True
+    if not changed:
+        return content
+    out = _BLANKS_BEFORE_MARKER.sub("\n\n", out)
+    out = _BLANKS_AFTER_MARKER.sub(r"\1\n\n", out)
+    return out
+
+
+def _spec(name):
+    return next(s for s in SWEEP_SPECS if s["name"] == name)
+
+
+def _sweep_targets(cfg, spec):
+    """Active, non-excluded repos with a README that the given sweep applies to."""
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    return [r for r in data if _scored(r, cfg) and not r.get("no_readme") and spec["applies"](r)]
+
+
+def run_sweep_by_name(cfg, commit, name):
+    spec = _spec(name)
+    _run_sweep(cfg, _sweep_targets(cfg, spec), spec["make_build"](cfg),
+               f"{cfg['commit_prefix']} {spec['msg']}", commit)
+
+
+SWEEPS = {s["name"]: (lambda cfg, commit, _n=s["name"]: run_sweep_by_name(cfg, commit, _n))
+          for s in SWEEP_SPECS}
 # order in which harmonize runs them (toc last, once other sections exist)
-SWEEP_ORDER = ["header", "sections", "techstack", "gettingstarted", "roadmap", "toc"]
+SWEEP_ORDER = [s["name"] for s in SWEEP_SPECS]
+
+
+def cmd_harmonize_pr(cfg, commit=False):
+    """Open one harmonization PR per eligible repo. Returns action counts.
+
+    Writes nothing unless `commit` is true — the same dry-run-by-default contract
+    the sweeps have always had. A dry run still does the full read-only pass (scan
+    each README, run the builds in memory) so it can report which repos would
+    actually get a PR, tallied under `would_pr`, rather than guessing from
+    eligibility alone.
+    """
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    eligible_repos = [r for r in data if eligible(r, cfg)]
+    raw_cap = cfg.get("max_prs")
+    # An explicit cap of 0 must be honored as "open no PRs this run", not
+    # treated as "unset" -- `0 or len(targets)` would silently discard the
+    # cap since 0 is falsy, so check identity against None instead. A
+    # negative cap is nonsensical as "how many PRs to open"; clamp to 0
+    # rather than let Python's negative-index slicing reinterpret it as
+    # "all but the last N", which would still process (and PR) repos.
+    cap = raw_cap if raw_cap is not None else len(eligible_repos)
+    cap = max(cap, 0)
+    # Slicing a stable, inventory-ordered list means the same head repos win
+    # every week: this starves the tail rather than rotating through it. Not a
+    # problem while the eligible set stays under the cap (5 incomplete vs a cap
+    # of 10 today); revisit if the backlog ever exceeds max_prs persistently.
+    targets, capped = eligible_repos[:cap], eligible_repos[cap:]
+
+    def names(bucket):
+        return ", ".join(f"{r['owner']}/{r['name']}" for r in bucket)
+
+    # The counts are pre-cap on purpose: `len(targets)` after slicing reports
+    # "0 eligible repo(s)" for a cap of 0, which reads as "there was nothing to
+    # do" when the truth is "there was work and the cap suppressed all of it".
+    print(f"PR MODE{'' if commit else ' · DRY-RUN (nothing will be written)'}"
+          f" · {len(eligible_repos)} eligible repo(s)"
+          + (f" · {len(capped)} deferred by max_prs" if capped else ""))
+    if targets:
+        print(f"  eligible: {names(targets)}")
+    if capped:
+        print(f"  deferred: {names(capped)}")
+
+    pairs = build_all(cfg)
+    counts = {"created": 0, "updated": 0, "unchanged": 0, "failed": 0,
+              "capped": len(capped), "would_pr": 0}
+
+    def work(r):
+        repo = f"{r['owner']}/{r['name']}"
+        try:
+            content, _, path = get_readme(repo)
+            if not content or not content.strip():
+                return "unchanged", repo, ""
+            new = harmonize_content(pairs, r, repo, content)
+            if new == content:
+                return "unchanged", repo, ""
+            if not commit:
+                return "would_pr", repo, "(dry-run: no branch, no PR)"
+            action, detail = open_or_update_pr(repo, r, new, path, cfg)
+            return action, repo, detail
+        except Exception as exc:  # noqa: BLE001 - one bad repo must not end the run
+            # ThreadPoolExecutor.map re-raises on iteration, which would abandon
+            # every repo after this one. Malformed API responses are a live
+            # concern here: api() hands back raw stdout (a str) when a response
+            # is not JSON, and several guards use substring `in` checks that a
+            # str passes before the subscript raises.
+            return "failed", repo, f"unexpected {type(exc).__name__}: {exc}"
+
+    with ThreadPoolExecutor(max_workers=cfg["max_workers"]) as ex:
+        for action, repo, detail in ex.map(work, targets):
+            counts[action] += 1
+            if action != "unchanged":
+                print(f"  {action}: {repo} {detail}")
+    print("Summary:", json.dumps(counts))
+    return counts
+
+
+REPORT_TITLE = "readme-forge: portfolio README drift"
+
+
+REPORT_FOOTER = "<sub>Maintained by readme-forge — this issue is edited in place, never duplicated.</sub>"
+
+# An empty scan is indistinguishable from a perfect portfolio in the numbers
+# ("0/0 complete"), so it gets its own body naming the plausible causes. The
+# inventory step already refuses to continue on an empty repo list; this is the
+# backstop for the case where every repo returned was filtered out instead.
+EMPTY_SCAN_BODY = (
+    "**No repositories were scored.** That is a broken run, not a clean portfolio — "
+    "treat this issue as an alarm, not a status.\n\n"
+    "Likely causes:\n\n"
+    "- `FORGE_ORGS` is unset, mistyped, or names an account that no longer exists\n"
+    "- the `FORGE_TOKEN` PAT expired, or its repository selection drifted and no longer "
+    "covers those accounts\n"
+    "- every repository returned was filtered out by `include_forks` / `include_archived` / "
+    "the `exclude_*` rules in the config\n\n"
+    + REPORT_FOOTER
+)
+
+
+def report_body(data, cfg):
+    """Build the roll-up issue body. Pure — no network, stable for identical input."""
+    scored = [r for r in data if _scored(r, cfg) and not r.get("no_readme")]
+    if not scored:
+        return EMPTY_SCAN_BODY
+    incomplete = [r for r in scored
+                  if not all(essential_ok(r, k) for k in cfg["essentials"])]
+    lines = [f"**{len(scored) - len(incomplete)}/{len(scored)}** scored repositories are complete.",
+             ""]
+    if not incomplete:
+        lines.append("Every scored repository meets the standard. Nothing to do.")
+        return "\n".join(lines)
+
+    def rows(bucket, reason=False):
+        if reason:
+            out = ["| Repository | Missing | Held back by |", "|---|---|---|"]
+        else:
+            out = ["| Repository | Missing |", "|---|---|"]
+        for r in sorted(bucket, key=lambda x: (x["owner"], x["name"])):
+            miss = ", ".join(k for k in cfg["essentials"] if not essential_ok(r, k))
+            row = f"| `{r['owner']}/{r['name']}` | {miss} |"
+            if reason:
+                row += f" {hold_reason(r, cfg)} |"
+            out.append(row)
+        return out + [""]
+
+    # Bucketed on `eligible`, not `fixable`: a sweep *applying* to a repo says
+    # nothing about whether the guardrails will let the forge near it. Listing a
+    # forge-ignore'd or in-grace repo under "the forge opens PRs for these" is a
+    # promise the harmonize run will not keep.
+    auto = [r for r in incomplete if eligible(r, cfg)]
+    held = [r for r in incomplete if fixable(r) and not eligible(r, cfg)]
+    human = [r for r in incomplete if not fixable(r)]
+    if auto:
+        lines += ["## Fixable automatically", "",
+                  "The forge opens PRs for these on its next harmonize run.", ""]
+        lines += rows(auto)
+    if held:
+        lines += ["## Fixable, but held back by a guardrail", "",
+                  "A sweep could write these, but the forge will not open a PR for them. "
+                  "They stay listed here so the gap is visible; no bot writes reach them.", ""]
+        lines += rows(held, reason=True)
+    if human:
+        lines += ["## Needs a human", "",
+                  "No deterministic sweep can write these — they need real judgement.", ""]
+        lines += rows(human)
+    lines.append(REPORT_FOOTER)
+    return "\n".join(lines)
+
+
+def cmd_report(cfg, repo):
+    """Create or edit the single roll-up issue in `repo`.
+
+    Returns the action taken: "created", "updated", or "failed". The open-issue
+    search is fail-closed by design: a search *error* is not the same thing as
+    "no issue is open" (isinstance(found, list) and found is False either way),
+    and treating it as "none open" would POST a duplicate roll-up issue every
+    time the search merely flakes -- the same reasoning open_or_update_pr
+    already applies to its own PR search (see find_open_pr).
+    """
+    data = json.load(open(f"{cfg['workdir']}/data.json"))
+    body = report_body(data, cfg)
+    label = cfg["report_label"]
+    found, err = api(f"repos/{repo}/issues?state=open&labels={label}")
+    if err:
+        print(f"failed: {err}")
+        return "failed"
+    if isinstance(found, list) and found:
+        num = found[0]["number"]
+        _, err = api(f"repos/{repo}/issues/{num}", "PATCH", {"body": body})
+        if err:
+            print(f"failed: {err}")
+            return "failed"
+        print(f"updated issue #{num}")
+        return "updated"
+    _, err = api(f"repos/{repo}/issues", "POST",
+                 {"title": REPORT_TITLE, "body": body, "labels": [label]})
+    if err:
+        print(f"failed: {err}")
+        return "failed"
+    print("created report issue")
+    return "created"
 
 
 # --------------------------------------------------------------- main --------
@@ -553,10 +1010,15 @@ def main():
             p.add_argument("--only", help="comma-separated repo names to limit to")
         if name in ("harmonize",):
             p.add_argument("--commit", action="store_true")
+            p.add_argument("--pr", action="store_true",
+                           help="open a PR per repo instead of committing to the default branch")
+            p.add_argument("--max-prs", type=int, help="override config max_prs")
     sp = sub.add_parser("sweep")
     sp.add_argument("which", choices=list(SWEEPS))
     sp.add_argument("--commit", action="store_true")
     sp.add_argument("--org", action="append", default=[])
+    rp = sub.add_parser("report")
+    rp.add_argument("--repo", required=True, help="owner/name of the repo holding the roll-up issue")
     args = ap.parse_args()
     cfg = load_config(args.config)
 
@@ -569,6 +1031,12 @@ def main():
         dashboard.generate(cfg)
     elif args.cmd == "sweep":
         SWEEPS[args.which](cfg, args.commit)
+    elif args.cmd == "report":
+        # Exit non-zero on failure so a scheduled run cannot go green while the
+        # roll-up issue silently goes stale (a rate-limited search, a rejected
+        # PATCH). The same reasoning applies to the PR driver below.
+        if cmd_report(cfg, args.repo) == "failed":
+            sys.exit("report failed — the roll-up issue was not updated")
     elif args.cmd == "run":
         cmd_inventory(cfg, args.org, args.only)
         cmd_scan(cfg)
@@ -577,12 +1045,23 @@ def main():
     elif args.cmd == "harmonize":
         cmd_inventory(cfg, args.org, args.only)
         cmd_scan(cfg)
-        for name in SWEEP_ORDER:
-            print(f"\n=== sweep: {name} ===")
-            SWEEPS[name](cfg, args.commit)
-            cmd_scan(cfg)  # refresh so the next sweep sees prior insertions
-        import dashboard
-        dashboard.generate(cfg)
+        if args.pr:
+            if args.max_prs is not None:
+                cfg["max_prs"] = args.max_prs
+            # --pr honors --commit like every other write path: without it the
+            # driver reports what it would do and touches nothing. The dashboard
+            # is not regenerated here -- the PR run neither publishes nor uploads
+            # it, and `run`/`dashboard` own that output.
+            counts = cmd_harmonize_pr(cfg, commit=args.commit)
+            if counts["failed"]:
+                sys.exit(f"{counts['failed']} repo(s) failed to harmonize")
+        else:
+            for name in SWEEP_ORDER:
+                print(f"\n=== sweep: {name} ===")
+                SWEEPS[name](cfg, args.commit)
+                cmd_scan(cfg)  # refresh so the next sweep sees prior insertions
+            import dashboard
+            dashboard.generate(cfg)
 
 
 if __name__ == "__main__":

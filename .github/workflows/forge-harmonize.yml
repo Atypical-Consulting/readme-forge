@@ -1,0 +1,57 @@
+name: forge-harmonize
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC, one hour after forge-watch
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Scan and report what would change, without opening PRs"
+        type: boolean
+        default: false
+      max_prs:
+        description: "Maximum PRs to open in this run"
+        type: string
+        default: "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-harmonize
+  cancel-in-progress: false
+
+jobs:
+  harmonize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The only step in either workflow that can write to a target repository,
+      # and only on the --commit branch below. Without --commit the same driver
+      # runs read-only and names the repos it would open PRs for -- which is
+      # what makes "dry_run" mean what its description says.
+      #
+      # FORGE_ORGS and max_prs go through env instead of being interpolated into
+      # the script text: FORGE_TOKEN is in scope in this shell, so a value
+      # containing shell syntax must never be able to become shell syntax.
+      - name: Harmonize eligible repositories
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORGS: ${{ vars.FORGE_ORGS }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_PRS: ${{ inputs.max_prs || '10' }}
+        run: |
+          ORGS=""
+          for o in $(echo "$FORGE_ORGS" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
+          if [ "$DRY_RUN" = "true" ]; then
+            python readme_forge.py --config portfolio.config.json harmonize --pr \
+              --max-prs "$MAX_PRS" $ORGS
+          else
+            python readme_forge.py --config portfolio.config.json harmonize --pr --commit \
+              --max-prs "$MAX_PRS" $ORGS
+          fi
