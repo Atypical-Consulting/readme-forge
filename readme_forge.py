@@ -565,7 +565,17 @@ def eligible(r, cfg, now=None):
         return False
     created, days = r.get("created_at"), cfg.get("grace_days") or 0
     if created and days:
-        born = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        try:
+            born = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            # created_at is present but not a parseable timestamp: we cannot
+            # confirm this repo is past its grace period, so fail closed and
+            # skip it for this run rather than risk an unattended PR against
+            # a repo we can't actually age-check. (A *missing* created_at is
+            # a different, expected case — legacy inventory data — and is
+            # handled above by `created and days` being falsy; that path
+            # deliberately does not block.)
+            return False
         if (now or datetime.now(timezone.utc)) - born < timedelta(days=days):
             return False
     return fixable(r)

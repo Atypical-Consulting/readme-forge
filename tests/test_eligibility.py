@@ -22,6 +22,26 @@ def test_repo_just_past_grace_period_is_eligible(cfg, rec):
     assert rf.eligible(_aged(rec, 31), cfg, now=NOW) is True
 
 
+def test_repo_one_day_short_of_grace_period_is_not_eligible(cfg, rec):
+    assert rf.eligible(_aged(rec, 29), cfg, now=NOW) is False
+
+
+def test_repo_exactly_at_grace_period_boundary_is_eligible(cfg, rec):
+    # Exactly `grace_days` old is not "younger than grace_days" — the age
+    # check only blocks a strict `age < grace_days`, so day 30 (with
+    # grace_days=30) is the first day a repo is allowed through.
+    assert rf.eligible(_aged(rec, 30), cfg, now=NOW) is True
+
+
+def test_malformed_created_at_fails_closed(cfg, rec):
+    # A present-but-unparseable created_at must not crash the run, and must
+    # not be treated as "unknown -> proceed" the way a *missing* field is:
+    # it's anomalous data, so the safer call for an unattended PR bot is to
+    # skip the repo this run rather than risk acting on data it can't trust.
+    rec["created_at"] = "not-a-timestamp"
+    assert rf.eligible(rec, cfg, now=NOW) is False
+
+
 def test_ignore_topic_opts_a_repo_out(cfg, rec):
     rec = _aged(rec, 365)
     rec["topics"] = ["dotnet", "forge-ignore"]
