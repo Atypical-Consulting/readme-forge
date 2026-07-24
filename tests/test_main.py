@@ -99,6 +99,18 @@ def test_harmonize_pr_with_commit_runs_the_driver_in_writing_mode(
     assert seen["commit"] is True
 
 
+def test_the_pr_path_does_not_regenerate_the_dashboard(monkeypatch, argv, stub_pipeline):
+    """forge-harmonize neither publishes nor uploads a dashboard; building one
+    on the PR path was work whose only output was discarded. `run` and
+    `dashboard` own that artifact."""
+    drawn = []
+    monkeypatch.setattr(dashboard, "generate", lambda cfg: drawn.append(True))
+    monkeypatch.setattr(rf, "cmd_harmonize_pr", lambda cfg, commit: {
+        "created": 0, "updated": 0, "unchanged": 0, "failed": 0, "capped": 0, "would_pr": 0})
+    argv("harmonize", "--pr", "--commit", "--org", "acme")
+    assert drawn == []
+
+
 def test_max_prs_override_still_reaches_the_driver(monkeypatch, argv, stub_pipeline):
     seen = {}
 

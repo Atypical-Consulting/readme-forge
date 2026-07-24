@@ -31,14 +31,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The only step in either workflow that can write to a target repository,
+      # and only on the --commit branch below. Without --commit the same driver
+      # runs read-only and names the repos it would open PRs for -- which is
+      # what makes "dry_run" mean what its description says.
+      #
+      # FORGE_ORGS and max_prs go through env instead of being interpolated into
+      # the script text: FORGE_TOKEN is in scope in this shell, so a value
+      # containing shell syntax must never be able to become shell syntax.
       - name: Harmonize eligible repositories
         env:
           GH_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORGS: ${{ vars.FORGE_ORGS }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_PRS: ${{ inputs.max_prs || '10' }}
         run: |
           ORGS=""
-          for o in $(echo "${{ vars.FORGE_ORGS }}" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            python readme_forge.py --config portfolio.config.json run $ORGS
+          for o in $(echo "$FORGE_ORGS" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
+          if [ "$DRY_RUN" = "true" ]; then
+            python readme_forge.py --config portfolio.config.json harmonize --pr \
+              --max-prs "$MAX_PRS" $ORGS
           else
-            python readme_forge.py --config portfolio.config.json harmonize --pr --max-prs "${{ inputs.max_prs || 10 }}" $ORGS
+            python readme_forge.py --config portfolio.config.json harmonize --pr --commit \
+              --max-prs "$MAX_PRS" $ORGS
           fi
