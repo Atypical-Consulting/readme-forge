@@ -111,6 +111,21 @@ def _hh(headings, *needles):
     return any(any(n in h for n in needles) for h in headings)
 
 
+def _is_features_heading(h):
+    """True for a real Features heading, tolerant of common decoration.
+
+    Accepts markdown emphasis (``**Features**``), a leading emoji
+    (``🚀 Language Features``) and a single qualifier word (``Advanced
+    Features``, ``Core Features``). Still rejects headings that merely mention
+    the word mid-phrase (``AI content pass (Features / Usage)``) because the
+    match is anchored and allows at most one word before ``features``.
+    """
+    h = h.lower()
+    h = re.sub(r"^[\s\d.)*_~`>#-]+", "", h)   # leading numbering / emphasis / punctuation
+    h = re.sub(r"^[^\w\s]+\s*", "", h)         # a leading emoji or other symbol
+    return bool(re.match(r"(?:\w+\s+)?features?\b", h))
+
+
 def detect(md):
     """Return {feature_key: bool|int} for one README's markdown."""
     low = md.lower()
@@ -132,10 +147,7 @@ def detect(md):
     f["md_table"] = bool(re.search(r"^\s*\|.*\|\s*$", md, re.M) and re.search(r"^\s*\|?[\s:-]*-{3,}[\s:|-]*\|", md, re.M))
     f["toc"] = bool(_hh(headings, "table of contents", "contents", "sommaire", "toc")
                     or re.search(r"\[[^\]]+\]\(#[^)]+\)[\s\S]{0,80}\[[^\]]+\]\(#", md))
-    # A real Features section, not any heading that merely mentions the word
-    # (e.g. "AI content pass (Features / Usage)" must not count).
-    f["features_sec"] = any(re.match(r"(?:[\d.\)\s]*)?(?:[^\w\s]\s*)?(?:key |core |main )?features?\b", h)
-                            for h in headings)
+    f["features_sec"] = any(_is_features_heading(h) for h in headings)
     f["tech_stack"] = _hh(headings, "tech stack", "built with", "stack", "technolog", "tech")
     f["install"] = bool(_hh(headings, "install", "getting started", "quick start", "quickstart", "setup")
                         or re.search(r"\b(npm i|npm install|dotnet add|pip install|yarn add|dotnet restore|git clone)\b", low))
