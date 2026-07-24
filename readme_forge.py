@@ -565,10 +565,18 @@ def eligible(r, cfg, now=None):
         return False
     created, days = r.get("created_at"), cfg.get("grace_days") or 0
     if created and days:
+        # created_at must look like an ISO-8601 string to be age-checked at
+        # all. Reject any other shape (int, list, dict, ...) *before* calling
+        # .replace()/fromisoformat() on it, rather than relying on catching
+        # whatever exception that misuse happens to raise — the failure mode
+        # (wrong type) is fully known up front, so a type check reads clearer
+        # here than a broad `except`.
+        if not isinstance(created, str):
+            return False
         try:
             born = datetime.fromisoformat(created.replace("Z", "+00:00"))
         except (TypeError, ValueError):
-            # created_at is present but not a parseable timestamp: we cannot
+            # created_at is a string but not a parseable timestamp: we cannot
             # confirm this repo is past its grace period, so fail closed and
             # skip it for this run rather than risk an unattended PR against
             # a repo we can't actually age-check. (A *missing* created_at is

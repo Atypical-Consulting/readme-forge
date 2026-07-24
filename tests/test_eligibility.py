@@ -42,6 +42,15 @@ def test_malformed_created_at_fails_closed(cfg, rec):
     assert rf.eligible(rec, cfg, now=NOW) is False
 
 
+def test_non_string_created_at_fails_closed(cfg, rec):
+    # A hand-edited or truncated .forge/data.json cache could carry a
+    # non-string created_at (e.g. an int). `.replace()` on it raises
+    # AttributeError *before* fromisoformat ever runs, so this must be
+    # rejected as a distinct shape from the malformed-string case above.
+    rec["created_at"] = 20200101
+    assert rf.eligible(rec, cfg, now=NOW) is False
+
+
 def test_ignore_topic_opts_a_repo_out(cfg, rec):
     rec = _aged(rec, 365)
     rec["topics"] = ["dotnet", "forge-ignore"]
