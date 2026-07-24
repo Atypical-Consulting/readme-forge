@@ -735,8 +735,12 @@ def cmd_harmonize_pr(cfg):
     raw_cap = cfg.get("max_prs")
     # An explicit cap of 0 must be honored as "open no PRs this run", not
     # treated as "unset" -- `0 or len(targets)` would silently discard the
-    # cap since 0 is falsy, so check identity against None instead.
+    # cap since 0 is falsy, so check identity against None instead. A
+    # negative cap is nonsensical as "how many PRs to open"; clamp to 0
+    # rather than let Python's negative-index slicing reinterpret it as
+    # "all but the last N", which would still process (and PR) repos.
     cap = raw_cap if raw_cap is not None else len(targets)
+    cap = max(cap, 0)
     capped = targets[cap:]
     targets = targets[:cap]
     print(f"PR MODE · {len(targets)} eligible repo(s)"
