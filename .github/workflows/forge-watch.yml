@@ -1,0 +1,73 @@
+name: forge-watch
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write     # commit the state snapshot
+  issues: write       # upsert the roll-up issue
+  pages: write        # deploy the dashboard
+  id-token: write     # required by deploy-pages
+
+concurrency:
+  group: forge-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore previous snapshot as the working baseline
+        run: |
+          mkdir -p .forge
+          [ -f state/data.json ] && cp state/data.json .forge/data.json || true
+          [ -f state/baseline.json ] && cp state/baseline.json .forge/baseline.json || true
+
+      - name: Inventory, scan and build the dashboard
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          ORGS=""
+          for o in $(echo "${{ vars.FORGE_ORGS }}" | tr ',' ' '); do ORGS="$ORGS --org $o"; done
+          python readme_forge.py --config portfolio.config.json run $ORGS
+
+      - name: Upsert the roll-up issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python readme_forge.py --config portfolio.config.json report --repo ${{ github.repository }}
+
+      - name: Persist the snapshot
+        run: |
+          cp .forge/data.json state/data.json
+          [ -f state/baseline.json ] || cp .forge/baseline.json state/baseline.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          git diff --staged --quiet || git commit -m "chore: refresh portfolio drift snapshot"
+          git push
+
+      - uses: actions/configure-pages@v5
+
+      - name: Stage the dashboard for Pages
+        run: |
+          mkdir -p _site
+          cp .forge/dashboard.html _site/index.html
+          cp .forge/data.json _site/data.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
